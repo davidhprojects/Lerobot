@@ -1,6 +1,6 @@
 # Replay files
-recorded_motion_follower.json
-recorded_motion.json
+Control/recorded_motion_follower.json
+Control/recorded_motion.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
