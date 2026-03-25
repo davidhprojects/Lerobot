@@ -1,17 +1,18 @@
 #!python
 """
-Reset a single STS3215 motor's voltage protection registers to factory defaults,
-then assign it the correct ID.
+Fix the voltage protection registers on a motor that is already ID-assigned
+and connected alongside all other motors.
 
-Use this when a motor reports:
-  [RxPacketError] Input voltage error!
+Use this instead of reset_motor.py when:
+  - The motor's ID is already set correctly
+  - All motors can stay connected (no need to isolate)
+  - You get: [RxPacketError] Input voltage error!
 
 Usage:
-  python reset_motor.py black
-  python reset_motor.py white
+  python fix_voltage.py black
+  python fix_voltage.py white
 
 Edit MOTOR_NAME below to the motor that needs fixing, then run the script.
-Connect ONLY that motor's wire before pressing Enter.
 """
 
 import json
@@ -44,7 +45,7 @@ ADDR_MIN_VOLTAGE     = (15, 1)
 ADDR_PRESENT_VOLTAGE = (62, 1)
 
 if len(sys.argv) != 2 or sys.argv[1] not in ARMS:
-    print(f"Usage: python reset_motor.py [{' | '.join(ARMS)}]")
+    print(f"Usage: python fix_voltage.py [{' | '.join(ARMS)}]")
     sys.exit(1)
 
 arm_name = sys.argv[1]
@@ -65,38 +66,23 @@ port = ports[arm_name]
 if MOTOR_NAME not in MOTORS:
     raise ValueError(f"Unknown motor '{MOTOR_NAME}'. Choose from: {list(MOTORS)}")
 
+motor_id = MOTORS[MOTOR_NAME].id
 print(f"Arm  : {arm_name} on {port}")
-print(f"Motor: {MOTOR_NAME}")
-input(f"\nConnect ONLY the '{MOTOR_NAME}' motor wire, then press Enter...")
+print(f"Motor: {MOTOR_NAME} (ID {motor_id})")
+print("All other motors can stay connected.")
+input("\nPress Enter to connect and fix voltage registers...")
 
 bus = FeetechMotorsBus(port=port, motors=MOTORS)
 bus._connect(handshake=False)
+bus.set_baudrate(1000000)
 
-# Scan using raw _broadcast_ping — public API filters out motors with error status
-print("Scanning for motor...")
-found_baudrate, found_id = None, None
-for baudrate in bus.model_baudrate_table["sts3215"]:
-    bus.set_baudrate(baudrate)
-    ids_status, comm = bus._broadcast_ping()
-    if bus._is_comm_success(comm) and ids_status:
-        found_id = next(iter(ids_status))
-        found_baudrate = baudrate
-        print(f"Found motor at baudrate={found_baudrate}, id={found_id} (status={ids_status[found_id]:#04x})")
-        break
-
-if found_id is None:
-    raise RuntimeError("Motor not found on any baudrate. Make sure only this motor is connected.")
-
-bus.set_baudrate(found_baudrate)
-
-# --- Diagnostics: read current register values ---
-def read_raw(addr_len, motor_id):
-    val, comm, _ = bus._read(*addr_len, motor_id, raise_on_error=False)
+def read_raw(addr_len, mid):
+    val, comm, _ = bus._read(*addr_len, mid, raise_on_error=False)
     return val if bus._is_comm_success(comm) else None
 
-present_v    = read_raw(ADDR_PRESENT_VOLTAGE, found_id)
-min_v_before = read_raw(ADDR_MIN_VOLTAGE, found_id)
-max_v_before = read_raw(ADDR_MAX_VOLTAGE, found_id)
+present_v    = read_raw(ADDR_PRESENT_VOLTAGE, motor_id)
+min_v_before = read_raw(ADDR_MIN_VOLTAGE, motor_id)
+max_v_before = read_raw(ADDR_MAX_VOLTAGE, motor_id)
 
 print(f"  Present voltage : {present_v * 0.1:.1f} V  (raw={present_v})" if present_v is not None else "  Present voltage : read failed")
 print(f"  Min voltage limit: {min_v_before * 0.1:.1f} V  (raw={min_v_before})" if min_v_before is not None else "  Min voltage limit: read failed")
@@ -109,16 +95,15 @@ NEW_MAX = 150
 
 print()
 print("Disabling torque and unlocking EEPROM...")
-bus._write(*ADDR_TORQUE_ENABLE, found_id, 0,       raise_on_error=False)
-bus._write(*ADDR_LOCK,          found_id, 0,       raise_on_error=False)
+bus._write(*ADDR_TORQUE_ENABLE, motor_id, 0,       raise_on_error=False)
+bus._write(*ADDR_LOCK,          motor_id, 0,       raise_on_error=False)
 
 print(f"Writing voltage limits: min={NEW_MIN}, max={NEW_MAX}...")
-bus._write(*ADDR_MAX_VOLTAGE, found_id, NEW_MAX, raise_on_error=False)
-bus._write(*ADDR_MIN_VOLTAGE, found_id, NEW_MIN, raise_on_error=False)
+bus._write(*ADDR_MAX_VOLTAGE, motor_id, NEW_MAX, raise_on_error=False)
+bus._write(*ADDR_MIN_VOLTAGE, motor_id, NEW_MIN, raise_on_error=False)
 
-# Read back to confirm the writes actually stuck in EEPROM
-min_v_after = read_raw(ADDR_MIN_VOLTAGE, found_id)
-max_v_after = read_raw(ADDR_MAX_VOLTAGE, found_id)
+min_v_after = read_raw(ADDR_MIN_VOLTAGE, motor_id)
+max_v_after = read_raw(ADDR_MAX_VOLTAGE, motor_id)
 print(f"  Read-back min: {min_v_after}  (expected {NEW_MIN}) — {'OK' if min_v_after == NEW_MIN else 'WRITE FAILED'}")
 print(f"  Read-back max: {max_v_after}  (expected {NEW_MAX}) — {'OK' if max_v_after == NEW_MAX else 'WRITE FAILED'}")
 
@@ -132,8 +117,4 @@ else:
     print("Voltage limits written successfully.")
     print("Power-cycle the motor now (unplug and reconnect its cable), then press Enter...")
     input()
-
-    print(f"Assigning ID {MOTORS[MOTOR_NAME].id} to '{MOTOR_NAME}'...")
-    bus2 = FeetechMotorsBus(port=port, motors=MOTORS)
-    bus2.setup_motor(MOTOR_NAME)
-    print(f"Done — '{MOTOR_NAME}' is now set to ID {MOTORS[MOTOR_NAME].id}.")
+    print(f"Done — '{MOTOR_NAME}' should be working. Run calibrate.py if needed.")
