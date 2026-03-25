@@ -10,7 +10,15 @@ All scripts use the `.venv` in the project root. Activate it before running anyt
 .venv\Scripts\Activate.ps1
 ```
 
-The follower arm connects on **COM3**. If it changes, update the `PORT` variable at the top of each script.
+### Port Detection
+
+Run this once whenever arms are connected to new USB ports. It identifies which COM port each arm is on and saves the result to `ports.json` (machine-local, not committed to git).
+
+```powershell
+python Control\find_ports.py
+```
+
+All other scripts read from `ports.json` automatically — no hardcoded ports anywhere.
 
 ---
 
@@ -19,13 +27,14 @@ The follower arm connects on **COM3**. If it changes, update the `PORT` variable
 Run once when assembling the arm or replacing a motor. Connect one motor at a time when prompted — the script walks through all 6 and assigns each its ID.
 
 ```powershell
-python Control\Motor_Setup.py
+python Control\Motor_Setup.py black
+python Control\Motor_Setup.py white
 ```
 
 If a single motor needs to be re-assigned (e.g. after a hardware fault), use:
 
 ```powershell
-python Control\assign_single_motor_id.py
+python Control\assign_single_motor_id.py black
 ```
 
 Edit `MOTOR_NAME` at the top of that file to the motor you want to fix before running.
@@ -37,7 +46,8 @@ Edit `MOTOR_NAME` at the top of that file to the motor you want to fix before ru
 Run after motor setup, or any time joint ranges feel off. The script guides you through moving each joint through its full range of motion.
 
 ```powershell
-python Control\calibrate.py
+python Control\calibrate.py black
+python Control\calibrate.py white
 ```
 
 Before pressing Enter at the first prompt, position the arm in the **middle of its range** — all joints away from their mechanical limits. Calibration files are saved to `calibrations/` and shared with the repository.
@@ -49,7 +59,7 @@ Before pressing Enter at the first prompt, position the arm in the **middle of i
 Records a motion by moving the arm by hand, then replays it back.
 
 ```powershell
-python Control\record_and_replay_follower.py
+python Control\record_and_replay.py
 ```
 
 1. Press Enter to start recording
@@ -61,20 +71,10 @@ python Control\record_and_replay_follower.py
 
 ## Troubleshooting
 
-**Motor not found / missing motor IDs**
-
-Run `scan_motors.py` with all motors connected to see which ones are responding and at what baudrate:
-
-```powershell
-python Control\scan_motors.py
-```
-
 **Motor flashing LED / Input voltage error**
 
-A motor's voltage protection registers may be corrupted. Run the reset script with only that motor connected:
+A motor's voltage protection registers may be corrupted. Edit `MOTOR_NAME` at the top of the script to the affected motor, then run:
 
 ```powershell
-python Control\reset_motor.py
+python Control\reset_motor.py black
 ```
-
-Edit `MOTOR_NAME` at the top to the affected motor before running.

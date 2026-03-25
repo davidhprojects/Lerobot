@@ -5,16 +5,23 @@ then assign it the correct ID.
 Use this when a motor reports:
   [RxPacketError] Input voltage error!
 
-Steps:
-  1. Edit MOTOR_NAME below to the motor that needs fixing
-  2. Connect ONLY that motor's wire
-  3. Run the script
+Usage:
+  python reset_motor.py black
+  python reset_motor.py white
+
+Edit MOTOR_NAME below to the motor that needs fixing, then run the script.
+Connect ONLY that motor's wire before pressing Enter.
 """
+
+import json
+import sys
+from pathlib import Path
 
 from lerobot.motors import Motor, MotorNormMode
 from lerobot.motors.feetech import FeetechMotorsBus
 
-PORT = "COM3"
+ARMS = ["black", "white"]
+PORTS_FILE = Path(__file__).parent.parent / "ports.json"
 
 # --- Set this to the motor you want to fix ---
 MOTOR_NAME = "wrist_flex"  # e.g. "shoulder_pan", "elbow_flex", "gripper", etc.
@@ -29,18 +36,39 @@ MOTORS = {
 }
 
 # STS3215 EEPROM addresses (addr, length)
-ADDR_TORQUE_ENABLE  = (40, 1)
-ADDR_LOCK           = (55, 1)
-ADDR_MAX_VOLTAGE    = (14, 1)
-ADDR_MIN_VOLTAGE    = (15, 1)
+ADDR_TORQUE_ENABLE   = (40, 1)
+ADDR_LOCK            = (55, 1)
+ADDR_MAX_VOLTAGE     = (14, 1)
+ADDR_MIN_VOLTAGE     = (15, 1)
 ADDR_PRESENT_VOLTAGE = (62, 1)
+
+if len(sys.argv) != 2 or sys.argv[1] not in ARMS:
+    print(f"Usage: python reset_motor.py [{' | '.join(ARMS)}]")
+    sys.exit(1)
+
+arm_name = sys.argv[1]
+
+if not PORTS_FILE.exists():
+    print(f"ports.json not found at {PORTS_FILE}. Run find_ports.py first.")
+    sys.exit(1)
+
+with open(PORTS_FILE) as f:
+    ports = json.load(f)
+
+if arm_name not in ports:
+    print(f"No port found for '{arm_name}' in ports.json. Run find_ports.py first.")
+    sys.exit(1)
+
+port = ports[arm_name]
 
 if MOTOR_NAME not in MOTORS:
     raise ValueError(f"Unknown motor '{MOTOR_NAME}'. Choose from: {list(MOTORS)}")
 
-input(f"Connect ONLY the '{MOTOR_NAME}' motor wire, then press Enter...")
+print(f"Arm  : {arm_name} on {port}")
+print(f"Motor: {MOTOR_NAME}")
+input(f"\nConnect ONLY the '{MOTOR_NAME}' motor wire, then press Enter...")
 
-bus = FeetechMotorsBus(port=PORT, motors=MOTORS)
+bus = FeetechMotorsBus(port=port, motors=MOTORS)
 bus._connect(handshake=False)
 
 # Scan using raw _broadcast_ping — public API filters out motors with error status
@@ -65,7 +93,7 @@ def read_raw(addr_len, motor_id):
     val, comm, _ = bus._read(*addr_len, motor_id, raise_on_error=False)
     return val if bus._is_comm_success(comm) else None
 
-present_v   = read_raw(ADDR_PRESENT_VOLTAGE, found_id)
+present_v    = read_raw(ADDR_PRESENT_VOLTAGE, found_id)
 min_v_before = read_raw(ADDR_MIN_VOLTAGE, found_id)
 max_v_before = read_raw(ADDR_MAX_VOLTAGE, found_id)
 
@@ -105,6 +133,6 @@ else:
     input()
 
     print(f"Assigning ID {MOTORS[MOTOR_NAME].id} to '{MOTOR_NAME}'...")
-    bus2 = FeetechMotorsBus(port=PORT, motors=MOTORS)
+    bus2 = FeetechMotorsBus(port=port, motors=MOTORS)
     bus2.setup_motor(MOTOR_NAME)
     print(f"Done — '{MOTOR_NAME}' is now set to ID {MOTORS[MOTOR_NAME].id}.")

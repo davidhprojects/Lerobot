@@ -1,36 +1,69 @@
 """
-Record leader arm motion, then replay it back through the same arm.
+Record arm motion (by moving it manually), then replay it back.
 
 Usage:
-  python record_and_replay.py
+  python record_and_replay.py black
+  python record_and_replay.py white
 
 - Press ENTER to start recording
-- Move the leader arm around
+- Move the arm around by hand
 - Press ENTER to stop recording
 - The arm will replay the recorded motion
 """
 
+import sys
 import time
 import json
 import threading
 from pathlib import Path
 
-from lerobot.teleoperators.so_leader import SOLeaderTeleopConfig, SO101Leader
+from lerobot.robots.so_follower import SOFollowerRobotConfig, SOFollower
 
-PORT = "COM_LEADER"  # TODO: set to the correct COM port for the leader arm
-RECORD_FPS = 30  # recording frequency in Hz
+ARMS = ["black", "white"]
+PORTS_FILE = Path(__file__).parent.parent / "ports.json"
+RECORD_FPS = 30
+CALIBRATION_DIR = Path(__file__).parent.parent / "calibrations"
 
 
 def main():
-    config = SOLeaderTeleopConfig(
-        id="my_leader_arm",
-        port=PORT,
-        use_degrees=True,
-    )
-    teleop = SO101Leader(config)
-    teleop.connect(calibrate=False)
+    if len(sys.argv) != 2 or sys.argv[1] not in ARMS:
+        print(f"Usage: python record_and_replay.py [{' | '.join(ARMS)}]")
+        sys.exit(1)
 
-    print(f"Connected to leader arm on {PORT}")
+    arm_name = sys.argv[1]
+
+    if not PORTS_FILE.exists():
+        print(f"Ports file not found at {PORTS_FILE}. Run find_ports.py first.")
+        sys.exit(1)
+
+    with open(PORTS_FILE) as f:
+        ports = json.load(f)
+
+    if arm_name not in ports:
+        print(f"No port found for '{arm_name}' in {PORTS_FILE}. Run find_ports.py first.")
+        sys.exit(1)
+
+    port = ports[arm_name]
+
+    config = SOFollowerRobotConfig(
+        id=arm_name,
+        port=port,
+        use_degrees=True,
+        calibration_dir=CALIBRATION_DIR,
+    )
+    robot = SOFollower(config)
+
+    # Connect bus, load calibration, configure motors (avoids interactive prompt)
+    robot.bus.connect()
+    if robot.calibration:
+        robot.bus.write_calibration(robot.calibration)
+    robot.configure()
+
+    # Disable torque so you can move the arm by hand
+    robot.bus.disable_torque()
+
+    print(f"Connected to {arm_name} on {port}")
+    print("All motors should be free to move now.")
     print()
 
     # --- Record ---
@@ -51,8 +84,7 @@ def main():
     interval = 1.0 / RECORD_FPS
     while not stop_event.is_set():
         start = time.perf_counter()
-        # Read raw (non-normalized) positions to avoid calibration issues
-        raw = teleop.bus.sync_read("Present_Position", normalize=False)
+        raw = robot.bus.sync_read("Present_Position", normalize=False)
         frames.append(raw)
         elapsed = time.perf_counter() - start
         sleep_time = interval - elapsed
@@ -70,31 +102,14 @@ def main():
     # --- Replay ---
     input("\nPress ENTER to replay the recorded motion...")
 
-    # Disable torque and reset position limits to full range
-    for motor in teleop.bus.motors:
-        try:
-            teleop.bus.write("Torque_Enable", motor, 0)
-            teleop.bus.write("Lock", motor, 0)
-            teleop.bus.write("Min_Position_Limit", motor, 0, normalize=False)
-            teleop.bus.write("Max_Position_Limit", motor, 4095, normalize=False)
-        except RuntimeError:
-            pass
-
+    # Re-configure and enable torque for replay
+    robot.configure()
     time.sleep(0.3)
-
-    # Enable torque on all motors
-    for motor in teleop.bus.motors:
-        try:
-            teleop.bus.write("Torque_Enable", motor, 1)
-            teleop.bus.write("Lock", motor, 1)
-        except RuntimeError as e:
-            print(f"Warning: could not enable torque on {motor}: {e}")
-
     print("Replaying...")
 
     for frame in frames:
         start = time.perf_counter()
-        teleop.bus.sync_write("Goal_Position", frame, normalize=False)
+        robot.bus.sync_write("Goal_Position", frame, normalize=False)
         elapsed = time.perf_counter() - start
         sleep_time = interval - elapsed
         if sleep_time > 0:
@@ -103,13 +118,8 @@ def main():
     print("Replay complete!")
 
     # Release motors
-    for motor in teleop.bus.motors:
-        try:
-            teleop.bus.write("Torque_Enable", motor, 0)
-        except RuntimeError:
-            pass
-
-    teleop.disconnect()
+    robot.bus.disable_torque()
+    robot.bus.disconnect()
     print("Disconnected.")
 
 
