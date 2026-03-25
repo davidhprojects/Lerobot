@@ -3,7 +3,7 @@
 import time
 import scservo_sdk as scs
 
-PORT = "/dev/tty.usbmodem5A7A0159151"
+PORT = "COM3"
 MOTOR_ID = 6
 BAUDRATE = 1000000
 

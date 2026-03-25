@@ -1,14 +1,17 @@
 """Quick test: open and close the gripper."""
 
 import time
+from pathlib import Path
 from lerobot.robots.so_follower import SOFollowerRobotConfig, SOFollower
 
-PORT = "/dev/tty.usbmodem5A7A0159151"
+PORT = "COM3"
+CALIBRATION_DIR = Path(__file__).parent.parent / "calibrations"
 
 config = SOFollowerRobotConfig(
-    id="my_follower_arm",
+    id="follower_arm",
     port=PORT,
     use_degrees=True,
+    calibration_dir=CALIBRATION_DIR,
 )
 robot = SOFollower(config)
 

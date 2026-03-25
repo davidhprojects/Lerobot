@@ -17,7 +17,7 @@ from pathlib import Path
 
 from lerobot.teleoperators.so_leader import SOLeaderTeleopConfig, SO101Leader
 
-PORT = "/dev/tty.usbmodem5A7A0156821"
+PORT = "COM_LEADER"  # TODO: set to the correct COM port for the leader arm
 RECORD_FPS = 30  # recording frequency in Hz
 
 
