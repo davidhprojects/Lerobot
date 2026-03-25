@@ -1,3 +1,4 @@
+#!python
 """
 Record arm motion (by moving it manually), then replay it back.
 

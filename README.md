@@ -15,7 +15,7 @@ All scripts use the `.venv` in the project root. Activate it before running anyt
 Run this once whenever arms are connected to new USB ports. It identifies which COM port each arm is on and saves the result to `ports.json` (machine-local, not committed to git).
 
 ```powershell
-python Control\find_ports.py
+python Setup\find_ports.py
 ```
 
 All other scripts read from `ports.json` automatically — no hardcoded ports anywhere.
@@ -27,14 +27,14 @@ All other scripts read from `ports.json` automatically — no hardcoded ports an
 Run once when assembling the arm or replacing a motor. Connect one motor at a time when prompted — the script walks through all 6 and assigns each its ID.
 
 ```powershell
-python Control\Motor_Setup.py black
-python Control\Motor_Setup.py white
+python Setup\Motor_Setup.py black
+python Setup\Motor_Setup.py white
 ```
 
 If a single motor needs to be re-assigned (e.g. after a hardware fault), use:
 
 ```powershell
-python Control\assign_single_motor_id.py black
+python Setup\assign_single_motor_id.py black
 ```
 
 Edit `MOTOR_NAME` at the top of that file to the motor you want to fix before running.
@@ -46,8 +46,8 @@ Edit `MOTOR_NAME` at the top of that file to the motor you want to fix before ru
 Run after motor setup, or any time joint ranges feel off. The script guides you through moving each joint through its full range of motion.
 
 ```powershell
-python Control\calibrate.py black
-python Control\calibrate.py white
+python Setup\calibrate.py black
+python Setup\calibrate.py white
 ```
 
 Before pressing Enter at the first prompt, position the arm in the **middle of its range** — all joints away from their mechanical limits. Calibration files are saved to `calibrations/` and shared with the repository.
@@ -64,7 +64,7 @@ python Control\record_and_replay.py
 
 1. Press Enter to start recording
 2. Move the arm through the motion you want to record
-3. Press Enter to stop — the recording is saved to `Control\recorded_motion_follower.json`
+3. Press Enter to stop — the recording is saved to `Control\recorded_motion.json`
 4. Press Enter to replay — the arm will repeat the motion
 
 ---
@@ -76,5 +76,5 @@ python Control\record_and_replay.py
 A motor's voltage protection registers may be corrupted. Edit `MOTOR_NAME` at the top of the script to the affected motor, then run:
 
 ```powershell
-python Control\reset_motor.py black
+python Setup\reset_motor.py black
 ```

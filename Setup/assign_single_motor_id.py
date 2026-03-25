@@ -1,3 +1,4 @@
+#!python
 """
 Assign an ID to a single motor without going through all 6.
 

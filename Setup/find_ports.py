@@ -1,3 +1,4 @@
+#!python
 """
 Identify which COM port each robot arm is connected to.
 

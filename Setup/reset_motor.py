@@ -1,3 +1,4 @@
+#!python
 """
 Reset a single STS3215 motor's voltage protection registers to factory defaults,
 then assign it the correct ID.

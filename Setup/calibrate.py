@@ -1,3 +1,4 @@
+#!python
 """
 Calibrate an arm using lerobot-calibrate.
 

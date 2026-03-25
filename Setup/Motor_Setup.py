@@ -1,3 +1,4 @@
+#!python
 """
 Assign motor IDs to an arm using lerobot-setup-motors.
 
