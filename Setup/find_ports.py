@@ -38,7 +38,7 @@ def wait_for_reconnect(before):
         time.sleep(0.2)
 
 
-ARMS = ["black", "white"]
+ARMS = ["right", "left"]
 results = {}
 
 print("This script will detect the COM port for each arm.")

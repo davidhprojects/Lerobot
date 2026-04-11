@@ -4,8 +4,8 @@ Read diagnostic registers from motors.
 
 Usage:
   python diagnose_motor.py              — voltage table for all 12 motors
-  python diagnose_motor.py black        — full diagnostics + nudge test for MOTOR_NAME on black
-  python diagnose_motor.py white        — full diagnostics + nudge test for MOTOR_NAME on white
+  python diagnose_motor.py right        — full diagnostics + nudge test for MOTOR_NAME on right
+  python diagnose_motor.py left         — full diagnostics + nudge test for MOTOR_NAME on left
 
 Edit MOTOR_NAME below to select which motor gets the full single-motor diagnostics.
 """
@@ -17,7 +17,7 @@ from pathlib import Path
 from lerobot.motors import Motor, MotorNormMode
 from lerobot.motors.feetech import FeetechMotorsBus
 
-ARMS = ["black", "white"]
+ARMS = ["right", "left"]
 PORTS_FILE = Path(__file__).parent.parent / "ports.json"
 
 MOTOR_NAME = "elbow_flex"

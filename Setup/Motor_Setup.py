@@ -3,8 +3,8 @@
 Assign motor IDs to an arm using lerobot-setup-motors.
 
 Usage:
-  python Motor_Setup.py black
-  python Motor_Setup.py white
+  python Motor_Setup.py right
+  python Motor_Setup.py left
 
 Steps:
   1. Run this script with the arm name
@@ -18,7 +18,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-ARMS = ["black", "white"]
+ARMS = ["right", "left"]
 PORTS_FILE = Path(__file__).parent.parent / "ports.json"
 PYTHON = sys.executable
 

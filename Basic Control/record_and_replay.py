@@ -3,8 +3,8 @@
 Record arm motion (by moving it manually), then replay it back.
 
 Usage:
-  python record_and_replay.py black
-  python record_and_replay.py white
+  python record_and_replay.py right
+  python record_and_replay.py left
 
 - Press ENTER to start recording
 - Move the arm around by hand
@@ -20,7 +20,7 @@ from pathlib import Path
 
 from lerobot.robots.so_follower import SOFollowerRobotConfig, SOFollower
 
-ARMS = ["black", "white"]
+ARMS = ["right", "left"]
 PORTS_FILE = Path(__file__).parent.parent / "ports.json"
 RECORD_FPS = 30
 CALIBRATION_DIR = Path(__file__).parent.parent / "calibrations"

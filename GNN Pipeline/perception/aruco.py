@@ -23,9 +23,9 @@ class MarkerConfig:
     tray_right : int
         Marker ID on the right side of the tray.
     left_gripper : int
-        Marker ID on the left (black) arm's gripper.
+        Marker ID on the left arm's gripper.
     right_gripper : int
-        Marker ID on the right (white) arm's gripper.
+        Marker ID on the right arm's gripper.
     tray_marker_spacing_m : float
         Horizontal distance between the two tray markers in meters.
         Used to compute tilt angle from their height difference.

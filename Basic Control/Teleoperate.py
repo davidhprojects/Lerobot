@@ -1,9 +1,9 @@
 #!python
 """
-Teleoperate black (follower) using white (leader) with relative positions.
+Teleoperate right (follower) using left (leader) with relative positions.
 
-White's motion delta from its starting pose is applied to black's starting
-pose — so black never jumps on startup regardless of calibration differences.
+Left's motion delta from its starting pose is applied to right's starting
+pose — so right never jumps on startup regardless of calibration differences.
 
 Both arms should be in their intended starting position before running.
 
@@ -28,20 +28,20 @@ if not PORTS_FILE.exists():
 with open(PORTS_FILE) as f:
     ports = json.load(f)
 
-for arm in ["black", "white"]:
+for arm in ["right", "left"]:
     if arm not in ports:
         print(f"No port found for '{arm}' in ports.json. Run find_ports.py first.")
         sys.exit(1)
 
 robot_config = SO101FollowerConfig(
-    port=ports["black"],
-    id="black",
+    port=ports["right"],
+    id="right",
     calibration_dir=CALIBRATION_DIR,
 )
 
 teleop_config = SO101LeaderConfig(
-    port=ports["white"],
-    id="white",
+    port=ports["left"],
+    id="left",
     calibration_dir=CALIBRATION_DIR,
 )
 
@@ -49,22 +49,22 @@ robot = SO101Follower(robot_config)
 teleop_device = SO101Leader(teleop_config)
 robot.connect()
 teleop_device.connect()
-teleop_device.bus.disable_torque()  # ensure white moves freely by hand
+teleop_device.bus.disable_torque()  # ensure left moves freely by hand
 
 # Capture starting positions for relative control.
 # Both arms should be in their intended start pose at this point.
-white_origin = teleop_device.get_action()
-_black_raw = robot.bus.sync_read("Present_Position", normalize=True)
+left_origin = teleop_device.get_action()
+_right_raw = robot.bus.sync_read("Present_Position", normalize=True)
 # get_action() keys have a '.pos' suffix (e.g. 'shoulder_pan.pos'); remap to match
-black_origin = {k + ".pos": v for k, v in _black_raw.items()}
+right_origin = {k + ".pos": v for k, v in _right_raw.items()}
 
 print("Teleoperation started (relative mode). Press Ctrl+C to stop.")
 
 try:
     while True:
-        white_current = teleop_device.get_action()
-        delta = {k: white_current[k] - white_origin[k] for k in white_current}
-        action = {k: black_origin[k] + delta[k] for k in delta}
+        left_current = teleop_device.get_action()
+        delta = {k: left_current[k] - left_origin[k] for k in left_current}
+        action = {k: right_origin[k] + delta[k] for k in delta}
         robot.send_action(action)
 finally:
     robot.bus.disable_torque()

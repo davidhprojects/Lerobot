@@ -3,8 +3,8 @@
 Assign an ID to a single motor without going through all 6.
 
 Usage:
-  python assign_single_motor_id.py black
-  python assign_single_motor_id.py white
+  python assign_single_motor_id.py right
+  python assign_single_motor_id.py left
 
 Motor name → ID mapping:
   shoulder_pan  → 1
@@ -25,7 +25,7 @@ from pathlib import Path
 from lerobot.motors import Motor, MotorNormMode
 from lerobot.motors.feetech import FeetechMotorsBus
 
-ARMS = ["black", "white"]
+ARMS = ["right", "left"]
 PORTS_FILE = Path(__file__).parent.parent / "ports.json"
 
 # --- Set this to the motor you want to assign ---

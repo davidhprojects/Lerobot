@@ -215,7 +215,7 @@ def ee_pose_6d(joint_angles: np.ndarray, params: SO101Params | None = None) -> n
 # Live test — read joint angles from a physical arm
 # ---------------------------------------------------------------------------
 
-ARMS = ["black", "white"]
+ARMS = ["right", "left"]
 PORTS_FILE = Path(__file__).parent.parent / "Setup" / "ports.json"
 
 
