@@ -1,5 +1,8 @@
 # Using ArUco markers for precise pose estimation of the tray and grippers.
 # There are 4 tags: one on each gripper, and two on the tray (left and right).
+#
+# cv2.aruco.estimatePoseSingleMarkers was removed in OpenCV 4.8.
+# We use cv2.solvePnP with the known marker geometry instead.
 
 import cv2
 import numpy as np
@@ -77,6 +80,48 @@ class ArucoDetector:
         self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
         self.labels = _build_labels(config)
 
+    def _estimate_pose(self, corners: tuple) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Estimate rotation and translation for each detected marker via solvePnP.
+
+        Replaces the removed cv2.aruco.estimatePoseSingleMarkers (OpenCV 4.8+).
+
+        Parameters
+        ----------
+        corners : tuple of ndarray
+            Corner pixel coordinates from detectMarkers().
+
+        Returns
+        -------
+        rvecs : ndarray, shape (N, 1, 3)
+        tvecs : ndarray, shape (N, 1, 3)
+        """
+        half = self.config.marker_size_m / 2.0
+        obj_pts = np.array([
+            [-half,  half, 0.0],
+            [ half,  half, 0.0],
+            [ half, -half, 0.0],
+            [-half, -half, 0.0],
+        ], dtype=np.float32)
+
+        rvecs = []
+        tvecs = []
+        for corner in corners:
+            img_pts = corner.reshape(4, 2).astype(np.float32)
+            ok, rvec, tvec = cv2.solvePnP(
+                obj_pts, img_pts,
+                self.camera_matrix, self.dist_coeffs,
+                flags=cv2.SOLVEPNP_IPPE_SQUARE,
+            )
+            if ok:
+                rvecs.append(rvec.reshape(1, 3))
+                tvecs.append(tvec.reshape(1, 3))
+            else:
+                rvecs.append(np.zeros((1, 3)))
+                tvecs.append(np.zeros((1, 3)))
+
+        return np.array(rvecs), np.array(tvecs)
+
     def detect(self, color_frame: np.ndarray) -> dict[int, np.ndarray]:
         """
         Detect all ArUco markers in an RGB frame.
@@ -97,10 +142,7 @@ class ArucoDetector:
         if ids is None or len(ids) == 0:
             return {}
 
-        rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
-            corners, self.config.marker_size_m,
-            self.camera_matrix, self.dist_coeffs,
-        )
+        rvecs, tvecs = self._estimate_pose(corners)
 
         poses: dict[int, np.ndarray] = {}
         for i, marker_id in enumerate(ids.flatten()):
@@ -130,10 +172,7 @@ class ArucoDetector:
         if ids is None or len(ids) == 0:
             return corners, ids, None, None
 
-        rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
-            corners, self.config.marker_size_m,
-            self.camera_matrix, self.dist_coeffs,
-        )
+        rvecs, tvecs = self._estimate_pose(corners)
         return corners, ids, rvecs, tvecs
 
     def get_tray_poses(self, poses: dict[int, np.ndarray]) -> dict[str, np.ndarray] | None:

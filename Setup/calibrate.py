@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 ARMS = ["right", "left"]
-PORTS_FILE = Path(__file__).parent.parent / "ports.json"
+PORTS_FILE = Path(__file__).parent / "ports.json"
 CALIBRATION_DIR = Path(__file__).parent.parent / "calibrations"
 PYTHON = sys.executable
 

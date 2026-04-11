@@ -22,7 +22,7 @@ from lerobot.motors import Motor, MotorNormMode
 from lerobot.motors.feetech import FeetechMotorsBus
 
 ARMS = ["right", "left"]
-PORTS_FILE = Path(__file__).parent.parent / "ports.json"
+PORTS_FILE = Path(__file__).parent / "ports.json"
 
 # --- Set this to the motor you want to fix ---
 MOTOR_NAME = "elbow_flex"  # e.g. "shoulder_pan", "elbow_flex", "gripper", etc.

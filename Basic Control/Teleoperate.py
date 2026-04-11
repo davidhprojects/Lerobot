@@ -18,7 +18,7 @@ from pathlib import Path
 from lerobot.teleoperators.so_leader import SO101LeaderConfig, SO101Leader
 from lerobot.robots.so_follower import SO101FollowerConfig, SO101Follower
 
-PORTS_FILE = Path(__file__).parent.parent / "ports.json"
+PORTS_FILE = Path(__file__).parent.parent / "Setup" / "ports.json"
 CALIBRATION_DIR = Path(__file__).parent.parent / "calibrations"
 
 if not PORTS_FILE.exists():

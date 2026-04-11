@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 ARMS = ["right", "left"]
-PORTS_FILE = Path(__file__).parent.parent / "ports.json"
+PORTS_FILE = Path(__file__).parent / "ports.json"
 PYTHON = sys.executable
 
 if len(sys.argv) != 2 or sys.argv[1] not in ARMS:

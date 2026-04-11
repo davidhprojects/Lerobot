@@ -21,7 +21,7 @@ from pathlib import Path
 from lerobot.robots.so_follower import SOFollowerRobotConfig, SOFollower
 
 ARMS = ["right", "left"]
-PORTS_FILE = Path(__file__).parent.parent / "ports.json"
+PORTS_FILE = Path(__file__).parent.parent / "Setup" / "ports.json"
 RECORD_FPS = 30
 CALIBRATION_DIR = Path(__file__).parent.parent / "calibrations"
 

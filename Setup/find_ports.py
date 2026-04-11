@@ -1,9 +1,10 @@
 #!python
 """
-Identify which COM port each robot arm is connected to.
+Identify which COM port each robot arm is connected to and detect
+the Intel RealSense D435i camera.
 
 The script asks you to unplug and replug each arm one at a time,
-then reports the port for each.
+then auto-detects the RealSense camera. Results are saved to ports.json.
 """
 
 import json
@@ -11,7 +12,7 @@ import time
 import serial.tools.list_ports
 from pathlib import Path
 
-PORTS_FILE = Path(__file__).parent.parent / "ports.json"
+PORTS_FILE = Path(__file__).parent / "ports.json"
 
 
 def get_ports():
@@ -38,10 +39,35 @@ def wait_for_reconnect(before):
         time.sleep(0.2)
 
 
+def find_realsense():
+    """Detect an Intel RealSense camera and return its serial number."""
+    try:
+        import pyrealsense2 as rs
+    except ImportError:
+        print("  pyrealsense2 not installed — skipping camera detection.")
+        return None
+
+    ctx = rs.context()
+    devices = ctx.query_devices()
+
+    if len(devices) == 0:
+        print("  No RealSense camera detected.")
+        return None
+
+    for dev in devices:
+        name = dev.get_info(rs.camera_info.name)
+        serial = dev.get_info(rs.camera_info.serial_number)
+        fw = dev.get_info(rs.camera_info.firmware_version)
+        print(f"  Found: {name}  (S/N: {serial}, FW: {fw})")
+        return {"name": name, "serial_number": serial, "firmware_version": fw}
+
+
+# --- Arm detection ---
+
 ARMS = ["right", "left"]
 results = {}
 
-print("This script will detect the COM port for each arm.")
+print("This script will detect the COM port for each arm and the RealSense camera.")
 print("Follow the prompts for each arm.\n")
 
 for arm in ARMS:
@@ -57,11 +83,23 @@ for arm in ARMS:
     results[arm] = port
     print(f"  {arm} is on {port}\n")
 
+# --- Camera detection ---
+
+print("--- RealSense D435i ---")
+camera_info = find_realsense()
+if camera_info:
+    results["camera"] = camera_info
+
+# --- Save ---
+
 with open(PORTS_FILE, "w") as f:
     json.dump(results, f, indent=2)
 
-print("=" * 30)
+print("\n" + "=" * 30)
 print("Results:")
-for arm, port in results.items():
-    print(f"  {arm}: {port}")
+for key, val in results.items():
+    if key == "camera":
+        print(f"  camera: {val['name']} (S/N: {val['serial_number']})")
+    else:
+        print(f"  {key}: {val}")
 print(f"\nSaved to {PORTS_FILE}")
