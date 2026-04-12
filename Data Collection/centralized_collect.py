@@ -97,7 +97,7 @@ OUTPUT_DIR = Path(__file__).parent / "episodes"
 # --- Safety ---
 MAX_TILT_DEG = 15.0                         # emergency stop if tray exceeds
 MAX_JOINT_SPEED_DEG_S = 60.0                # clamp joint velocity
-MAX_CONSECUTIVE_TILT_MISREADS = 150           # stop after this many unreadable frames (~167ms at 30Hz)
+MAX_CONSECUTIVE_TILT_MISREADS = 150         # stop after this many unreadable frames (~5s at 30Hz) - Ignoring any issues for now!
 
 # --- Randomization (for data diversity across episodes) ---
 # Small random perturbations make the dataset richer.

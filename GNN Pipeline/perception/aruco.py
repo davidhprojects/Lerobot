@@ -37,7 +37,7 @@ class MarkerConfig:
     marker_size_m: float = 0.015  # 15 mm tag size (inner pattern, not border): we learned this the hard way
     # 1-4: left to right across the camera frame
     left_gripper: int = 1
-    tray_left: int = 2
+    tray_left: int = 5
     tray_right: int = 3
     right_gripper: int = 4
     tray_marker_spacing_m: float = 0.14 # 140 mm between the 2 tray markers
