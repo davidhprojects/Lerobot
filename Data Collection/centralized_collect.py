@@ -65,30 +65,30 @@ GRIPPER_CLOSED_DEG = -30.0                  # clamped on tray edge
 
 # --- Post-grasp vertical lift ---
 # How far to raise the tray after both grippers close.
-LIFT_HEIGHT_M = 0.100                       # 100 mm
+LIFT_HEIGHT_M = 0.050                       # 50 mm
 
 # --- Horizontal translation ---
 # How far to move the tray forward (toward/away from camera) after lift.
-TRANSLATE_DISTANCE_M = 0.150                # 150 mm
+TRANSLATE_DISTANCE_M = 0.100                # 100 mm
 
 # --- Lower (set down) ---
 # How far to lower the tray when placing it down. Usually matches lift.
-LOWER_HEIGHT_M = 0.100                      # 100 mm
+LOWER_HEIGHT_M = 0.050                      # 50 mm
 
 # --- Phase durations (control speed of each movement) ---
 # Longer duration = slower, smoother motion. Shorter = faster.
-APPROACH_DURATION_S = 3.0                   # home -> pre-grasp
-DESCEND_DURATION_S = 1.5                    # pre-grasp -> grasp position
+APPROACH_DURATION_S = 5.0                   # home -> pre-grasp
+DESCEND_DURATION_S = 2.0                    # pre-grasp -> grasp position
 GRASP_CLOSE_DURATION_S = 0.5               # time to close grippers
 GRASP_SETTLE_S = 0.5                        # pause after close for firm grip
 LIFT_DURATION_S = 2.0                       # vertical raise
-TRANSLATE_DURATION_S = 2.0                  # horizontal translation
+TRANSLATE_DURATION_S = 4.0                  # horizontal translation
 LOWER_DURATION_S = 2.0                      # lower to table
 RELEASE_OPEN_DURATION_S = 0.5              # time to open grippers
 RETREAT_DURATION_S = 2.0                    # grasp position -> home
 
 # --- Pauses ---
-INTER_PHASE_PAUSE_S = 0.3                  # brief pause between phases
+INTER_PHASE_PAUSE_S = 1.0                  # brief pause between phases
 
 # --- Recording ---
 RECORD_FPS = 30
@@ -97,7 +97,7 @@ OUTPUT_DIR = Path(__file__).parent / "episodes"
 # --- Safety ---
 MAX_TILT_DEG = 15.0                         # emergency stop if tray exceeds
 MAX_JOINT_SPEED_DEG_S = 60.0                # clamp joint velocity
-MAX_CONSECUTIVE_TILT_MISREADS = 5           # stop after this many unreadable frames (~167ms at 30Hz)
+MAX_CONSECUTIVE_TILT_MISREADS = 150           # stop after this many unreadable frames (~167ms at 30Hz)
 
 # --- Randomization (for data diversity across episodes) ---
 # Small random perturbations make the dataset richer.
