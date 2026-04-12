@@ -3,7 +3,9 @@ Control/recorded_motion_follower.json
 Control/recorded_motion.json
 
 # Image Data
-.png
+*.png
+*.csv
+*.json
 
 # Machine-specific port config
 ports.json
