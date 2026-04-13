@@ -7,8 +7,8 @@ Use this when a motor reports:
   [RxPacketError] Input voltage error!
 
 Usage:
-  python reset_motor.py black
-  python reset_motor.py white
+  python reset_motor.py right
+  python reset_motor.py left
 
 Edit MOTOR_NAME below to the motor that needs fixing, then run the script.
 Connect ONLY that motor's wire before pressing Enter.
@@ -21,8 +21,8 @@ from pathlib import Path
 from lerobot.motors import Motor, MotorNormMode
 from lerobot.motors.feetech import FeetechMotorsBus
 
-ARMS = ["black", "white"]
-PORTS_FILE = Path(__file__).parent.parent / "ports.json"
+ARMS = ["right", "left"]
+PORTS_FILE = Path(__file__).parent / "ports.json"
 
 # --- Set this to the motor you want to fix ---
 MOTOR_NAME = "elbow_flex"  # e.g. "shoulder_pan", "elbow_flex", "gripper", etc.

@@ -3,8 +3,8 @@
 Calibrate an arm using lerobot-calibrate.
 
 Usage:
-  python calibrate.py black
-  python calibrate.py white
+  python calibrate.py right
+  python calibrate.py left
 
 The calibration procedure will guide you through moving each joint
 to its min and max positions so lerobot can learn the full range of motion.
@@ -15,8 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-ARMS = ["black", "white"]
-PORTS_FILE = Path(__file__).parent.parent / "ports.json"
+ARMS = ["right", "left"]
+PORTS_FILE = Path(__file__).parent / "ports.json"
 CALIBRATION_DIR = Path(__file__).parent.parent / "calibrations"
 PYTHON = sys.executable
 

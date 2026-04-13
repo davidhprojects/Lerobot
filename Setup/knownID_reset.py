@@ -9,8 +9,8 @@ Use this instead of reset_motor.py when:
   - You get: [RxPacketError] Input voltage error!
 
 Usage:
-  python fix_voltage.py black
-  python fix_voltage.py white
+  python fix_voltage.py right
+  python fix_voltage.py left
 
 Edit MOTOR_NAME below to the motor that needs fixing, then run the script.
 """
@@ -22,11 +22,11 @@ from pathlib import Path
 from lerobot.motors import Motor, MotorNormMode
 from lerobot.motors.feetech import FeetechMotorsBus
 
-ARMS = ["black", "white"]
-PORTS_FILE = Path(__file__).parent.parent / "ports.json"
+ARMS = ["right", "left"]
+PORTS_FILE = Path(__file__).parent / "ports.json"
 
 # --- Set this to the motor you want to fix ---
-MOTOR_NAME = "gripper"  # e.g. "shoulder_pan", "elbow_flex", "gripper", etc.
+MOTOR_NAME = "shoulder_pan"  # e.g. "shoulder_pan", "elbow_flex", "gripper", etc.
 
 MOTORS = {
     "shoulder_pan":  Motor(1, "sts3215", MotorNormMode.DEGREES),

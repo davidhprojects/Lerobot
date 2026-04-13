@@ -27,14 +27,14 @@ All other scripts read from `ports.json` automatically — no hardcoded ports an
 Run once when assembling the arm or replacing a motor. Connect one motor at a time when prompted — the script walks through all 6 and assigns each its ID.
 
 ```powershell
-python Setup\Motor_Setup.py black
-python Setup\Motor_Setup.py white
+python Setup\Motor_Setup.py right
+python Setup\Motor_Setup.py left
 ```
 
 If a single motor needs to be re-assigned (e.g. after a hardware fault), use:
 
 ```powershell
-python Setup\assign_single_motor_id.py black
+python Setup\assign_single_motor_id.py right
 ```
 
 Edit `MOTOR_NAME` at the top of that file to the motor you want to fix before running.
@@ -46,8 +46,8 @@ Edit `MOTOR_NAME` at the top of that file to the motor you want to fix before ru
 Run after motor setup, or any time joint ranges feel off. The script guides you through moving each joint through its full range of motion.
 
 ```powershell
-python Setup\calibrate.py black
-python Setup\calibrate.py white
+python Setup\calibrate.py right
+python Setup\calibrate.py left
 ```
 
 Before pressing Enter at the first prompt, position the arm in the **middle of its range** — all joints away from their mechanical limits. Calibration files are saved to `calibrations/` and shared with the repository.
@@ -76,5 +76,5 @@ python Control\record_and_replay.py
 A motor's voltage protection registers may be corrupted. Edit `MOTOR_NAME` at the top of the script to the affected motor, then run:
 
 ```powershell
-python Setup\reset_motor.py black
+python Setup\reset_motor.py right
 ```
