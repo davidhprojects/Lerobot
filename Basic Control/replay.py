@@ -61,10 +61,7 @@ def main():
     )
     robot = SOFollower(config)
 
-    robot.bus.connect()
-    if robot.calibration:
-        robot.bus.write_calibration(robot.calibration)
-    robot.configure()
+    robot.connect()
 
     print(f"Connected to {arm_name} on {port}")
     input("Press ENTER to start replay...")
@@ -80,8 +77,9 @@ def main():
 
     print("Replay complete!")
 
-    robot.bus.disable_torque()
-    robot.bus.disconnect()
+    robot.bus.sync_write("Torque_Enable", 0, normalize=False)
+    robot.config.disable_torque_on_disconnect = False
+    robot.disconnect()
     print("Disconnected.")
 
 

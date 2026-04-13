@@ -54,11 +54,7 @@ def main():
     )
     robot = SOFollower(config)
 
-    # Connect bus, load calibration, configure motors (avoids interactive prompt)
-    robot.bus.connect()
-    if robot.calibration:
-        robot.bus.write_calibration(robot.calibration)
-    robot.configure()
+    robot.connect()
 
     # Disable torque so you can move the arm by hand
     robot.bus.disable_torque()
@@ -118,9 +114,10 @@ def main():
 
     print("Replay complete!")
 
-    # Release motors
-    robot.bus.disable_torque()
-    robot.bus.disconnect()
+    # Release motors: use broadcast write (no response needed) then close cleanly
+    robot.bus.sync_write("Torque_Enable", 0, normalize=False)
+    robot.config.disable_torque_on_disconnect = False
+    robot.disconnect()
     print("Disconnected.")
 
 

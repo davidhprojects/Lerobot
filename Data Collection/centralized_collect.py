@@ -200,10 +200,7 @@ def connect_arm(arm_name: str, port: str) -> SOFollower:
         calibration_dir=CALIBRATION_DIR,
     )
     robot = SOFollower(config)
-    robot.bus.connect()
-    if robot.calibration:
-        robot.bus.write_calibration(robot.calibration)
-    robot.configure()
+    robot.connect()
     return robot
 
 
@@ -907,10 +904,10 @@ def main():
         print("\nInterrupted by user.")
 
     finally:
-        left_robot.bus.disable_torque()
-        right_robot.bus.disable_torque()
-        left_robot.bus.disconnect()
-        right_robot.bus.disconnect()
+        for r in [left_robot, right_robot]:
+            r.bus.sync_write("Torque_Enable", 0, normalize=False)
+            r.config.disable_torque_on_disconnect = False
+            r.disconnect()
         print("Arms disconnected.")
 
 

@@ -26,7 +26,7 @@ ARMS = ["right", "left"]
 PORTS_FILE = Path(__file__).parent / "ports.json"
 
 # --- Set this to the motor you want to fix ---
-MOTOR_NAME = "shoulder_pan"  # e.g. "shoulder_pan", "elbow_flex", "gripper", etc.
+MOTOR_NAME = "elbow_flex"  # e.g. "shoulder_pan", "elbow_flex", "gripper", etc.
 
 MOTORS = {
     "shoulder_pan":  Motor(1, "sts3215", MotorNormMode.DEGREES),

@@ -235,10 +235,7 @@ def _connect_arm(arm_name, ports):
         calibration_dir=CALIBRATION_DIR,
     )
     robot = SOFollower(config)
-    robot.bus.connect()
-    if robot.calibration:
-        robot.bus.write_calibration(robot.calibration)
-    robot.configure()
+    robot.connect()
     robot.bus.disable_torque()
     return robot
 
@@ -296,7 +293,7 @@ def main():
     print("Move the arm around — FK output updates live. Press Ctrl+C to stop.\n")
     _run_live(robot)
 
-    robot.bus.disconnect()
+    robot.disconnect()
     print("Disconnected.")
 
 

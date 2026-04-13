@@ -93,10 +93,7 @@ def connect_arm(arm_name: str, port: str) -> SOFollower:
         calibration_dir=CALIBRATION_DIR,
     )
     robot = SOFollower(config)
-    robot.bus.connect()
-    if robot.calibration:
-        robot.bus.write_calibration(robot.calibration)
-    robot.configure()
+    robot.connect()
     return robot
 
 
@@ -791,8 +788,9 @@ def main():
         if provider is not None:
             provider.stop()
         for r in [left_robot, right_robot]:
-            r.bus.disable_torque()
-            r.bus.disconnect()
+            r.bus.sync_write("Torque_Enable", 0, normalize=False)
+            r.config.disable_torque_on_disconnect = False
+            r.disconnect()
         camera.disconnect()
         print("Disconnected.")
 
