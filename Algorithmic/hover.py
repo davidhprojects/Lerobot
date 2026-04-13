@@ -30,7 +30,7 @@ from lerobot.robots.so_follower import SOFollowerRobotConfig, SOFollower
 from perception.camera import RealSenseCamera
 from perception.aruco import ArucoDetector, MarkerConfig
 from forward_kinematics import (
-    ee_position, JOINT_NAMES as FK_JOINT_NAMES, CALIBRATION_DIR
+    forward_kinematics, ee_position, JOINT_NAMES as FK_JOINT_NAMES, CALIBRATION_DIR
 )
 
 
@@ -40,6 +40,7 @@ from forward_kinematics import (
 
 PORTS_FILE = Path(__file__).parent.parent / "Setup" / "ports.json"
 WAYPOINTS_FILE = Path(__file__).parent.parent / "Data Collection" / "waypoints.json"
+CALIBRATION_FILE = Path(__file__).parent / "camera_to_base_calibration.json"
 
 MOTOR_NAMES = [
     "shoulder_pan", "shoulder_lift", "elbow_flex",
@@ -47,17 +48,19 @@ MOTOR_NAMES = [
 ]
 
 # Hover target
-HOVER_HEIGHT_M = 0.12           # 12 cm above tray marker (camera Y axis)
+HOVER_HEIGHT_M = 0.14           # 14 cm above tray marker (camera Y axis)
 
 # Controller tuning
-GAIN = 0.5                      # proportional gain on camera-frame error
-MAX_JOINT_STEP_DEG = 1.0        # per-joint safety clamp (degrees per step)
+MAX_JOINT_STEP_DEG = 3.0        # per-joint clamp per control step (degrees)
 CONTROL_HZ = 15                 # control loop frequency
-DAMPING = 0.01                  # damped-least-squares regularization
+ORIENTATION_GAIN = 0.3          # wrist orientation correction gain
+ORIENTATION_DAMPING = 0.01      # DLS damping for 2x2 wrist solver
+IK_MAX_ITERS = 10               # Newton-Raphson iterations for position IK
+IK_TOLERANCE = 5e-4             # convergence threshold (0.5 mm)
 
 # Calibration
-CALIBRATION_PERTURB_DEG = 5.0   # how far to wiggle each joint
-SETTLE_TIME_S = 0.4             # pause after each calibration perturbation
+CALIBRATION_PERTURB_DEG = 8.0   # how far to wiggle each joint
+SETTLE_TIME_S = 0.8             # pause after each calibration perturbation
 
 # Smooth motion
 APPROACH_DURATION_S = 4.0       # home -> pre_grasp transition time
@@ -187,22 +190,122 @@ def smooth_move(
 
 
 # ============================================================
-# FK JACOBIAN
+# DECOUPLED IK: POSITION (JOINTS 0-2) + ORIENTATION (JOINTS 3-4)
 # ============================================================
 
-def compute_fk_jacobian(q_rad: np.ndarray, eps: float = 1e-4) -> np.ndarray:
+def orientation_error(R_current: np.ndarray, R_target: np.ndarray) -> np.ndarray:
     """
-    Numerical 3x5 positional Jacobian of end-effector in robot base frame.
+    Compute orientation error as an axis-angle 3-vector.
 
-    J[:,i] = dp_ee / dq_i   (meters per radian)
+    Returns the rotation (in radians) that would bring R_current to R_target.
+    Zero vector means aligned.
     """
-    p0 = ee_position(q_rad)
-    J = np.zeros((3, 5))
-    for i in range(5):
-        q = q_rad.copy()
-        q[i] += eps
-        J[:, i] = (ee_position(q) - p0) / eps
-    return J
+    R_err = R_target @ R_current.T
+    cos_angle = np.clip((np.trace(R_err) - 1.0) / 2.0, -1.0, 1.0)
+    angle = np.arccos(cos_angle)
+
+    if angle < 1e-6:
+        return np.zeros(3)
+
+    axis = np.array([
+        R_err[2, 1] - R_err[1, 2],
+        R_err[0, 2] - R_err[2, 0],
+        R_err[1, 0] - R_err[0, 1],
+    ]) / (2.0 * np.sin(angle))
+
+    return angle * axis
+
+
+def solve_position_ik(
+    q_arm: np.ndarray,
+    q_wrist: np.ndarray,
+    target_base: np.ndarray,
+    max_iters: int = IK_MAX_ITERS,
+    tol: float = IK_TOLERANCE,
+) -> tuple[np.ndarray, bool]:
+    """
+    Newton-Raphson IK for the 3 arm joints (shoulder_pan, shoulder_lift,
+    elbow_flex) to place the end-effector at target_base.
+
+    Wrist joints are held constant at q_wrist.
+
+    Returns (q_arm_solution, converged).
+    """
+    q3 = q_arm.copy()
+    eps = 1e-4
+
+    for _ in range(max_iters):
+        q_full = np.concatenate([q3, q_wrist])
+        p = ee_position(q_full)
+        error = target_base - p
+        if np.linalg.norm(error) < tol:
+            return q3, True
+
+        # 3x3 position Jacobian for arm joints only
+        J = np.zeros((3, 3))
+        for i in range(3):
+            q_pert = q_full.copy()
+            q_pert[i] += eps
+            J[:, i] = (ee_position(q_pert) - p) / eps
+
+        try:
+            dq = np.linalg.solve(J, error)
+        except np.linalg.LinAlgError:
+            return q3, False
+
+        # Limit Newton step to prevent divergence
+        max_newton_step = np.deg2rad(10.0)
+        scale = np.max(np.abs(dq)) / max_newton_step
+        if scale > 1.0:
+            dq /= scale
+
+        q3 = q3 + dq
+
+    # Didn't converge within tolerance — return best effort
+    return q3, False
+
+
+def compute_wrist_correction(
+    q_full_rad: np.ndarray,
+    R_cam_base: np.ndarray,
+    target_rot_cam: np.ndarray,
+    gain: float = ORIENTATION_GAIN,
+    damping: float = ORIENTATION_DAMPING,
+) -> np.ndarray:
+    """
+    Compute wrist_flex and wrist_roll deltas for 2D orientation correction.
+
+    Only corrects the two orientation axes visible in the camera image
+    (camera Y and Z).  The camera X axis (tilt toward/away from camera)
+    is left unconstrained.
+
+    Returns dq_wrist as a (2,) array in radians.
+    """
+    eps = 1e-4
+
+    # Current orientation in camera frame
+    R_ee_cam = R_cam_base @ forward_kinematics(q_full_rad)[:3, :3]
+
+    # Full 3D error, then keep only Y and Z components
+    ori_err_2d = orientation_error(R_ee_cam, target_rot_cam)[1:]  # (2,)
+
+    # 2-joint angular Jacobian for wrist_flex (joint 3) and wrist_roll (joint 4)
+    R0 = forward_kinematics(q_full_rad)[:3, :3]
+    J_ori_base = np.zeros((3, 2))
+    for i in range(2):
+        q = q_full_rad.copy()
+        q[3 + i] += eps
+        R_delta = forward_kinematics(q)[:3, :3] @ R0.T
+        J_ori_base[0, i] = (R_delta[2, 1] - R_delta[1, 2]) / (2 * eps)
+        J_ori_base[1, i] = (R_delta[0, 2] - R_delta[2, 0]) / (2 * eps)
+        J_ori_base[2, i] = (R_delta[1, 0] - R_delta[0, 1]) / (2 * eps)
+
+    # Rotate to camera frame and take Y, Z rows → (2, 2)
+    J_2d = (R_cam_base @ J_ori_base)[1:, :]
+
+    # Damped least-squares on the 2x2 system
+    JJt = J_2d @ J_2d.T + damping * np.eye(2)
+    return J_2d.T @ np.linalg.solve(JJt, gain * ori_err_2d)
 
 
 # ============================================================
@@ -317,6 +420,32 @@ def calibrate_camera_to_base(
     return R
 
 
+def save_calibration(
+    R_left: np.ndarray, R_right: np.ndarray,
+    R_target_base_left: np.ndarray, R_target_base_right: np.ndarray,
+    path: Path = CALIBRATION_FILE,
+):
+    """Save camera-to-base rotations and target orientations to JSON."""
+    data = {
+        "R_left": R_left.tolist(),
+        "R_right": R_right.tolist(),
+        "R_target_base_left": R_target_base_left.tolist(),
+        "R_target_base_right": R_target_base_right.tolist(),
+    }
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+    print(f"  Calibration saved to {path}")
+
+
+def load_calibration(path: Path = CALIBRATION_FILE) -> dict[str, np.ndarray] | None:
+    """Load saved calibration. Returns None if file doesn't exist."""
+    if not path.exists():
+        return None
+    with open(path) as f:
+        data = json.load(f)
+    return {k: np.array(v) for k, v in data.items()}
+
+
 # ============================================================
 # HOVER CONTROLLER
 # ============================================================
@@ -341,41 +470,58 @@ def hover_step(
     gripper_pos_cam: np.ndarray,
     target_pos_cam: np.ndarray,
     R_cam_base: np.ndarray,
-    gain: float = GAIN,
+    target_rot_cam: np.ndarray | None = None,
     max_step_deg: float = MAX_JOINT_STEP_DEG,
-    damping: float = DAMPING,
 ) -> float:
     """
-    One iteration of Jacobian-based visual servoing.
+    Decoupled position + orientation controller.
 
-    Computes and applies a joint position update to move the gripper
-    toward the target in camera frame.  Uses the FK Jacobian rotated
-    into camera frame with damped-least-squares inversion.
+    Joints 0-2 (shoulder_pan, shoulder_lift, elbow_flex) are solved via
+    exact Newton-Raphson IK for the full 3D target position.
 
-    Returns the position error magnitude (meters) before the step.
+    Joints 3-4 (wrist_flex, wrist_roll) correct the 2D gripper orientation
+    visible in the camera image (ignoring toward/away-from-camera tilt).
+
+    Returns the 3D position error magnitude (meters) before the step.
     """
     error_cam = target_pos_cam - gripper_pos_cam
     error_mag = np.linalg.norm(error_cam)
 
-    # FK Jacobian in base frame, rotated to camera frame
     q_rad = get_fk_angles_rad(robot)
-    J_cam = R_cam_base @ compute_fk_jacobian(q_rad)  # (3, 5)
+    q_arm = q_rad[:3]
+    q_wrist = q_rad[3:]
 
-    # Damped least-squares:  dq = J^T (J J^T + lambda I)^-1  e
-    dq_rad = J_cam.T @ np.linalg.solve(
-        J_cam @ J_cam.T + damping * np.eye(3),
-        gain * error_cam,
-    )
+    # --- Position: exact IK for arm joints (0-2) ---
+    # Convert camera-frame target to base-frame target.
+    # p_base_target = p_base_current + R^T @ error_cam
+    # (translation cancels in the delta)
+    p_base_current = ee_position(q_rad)
+    p_base_target = p_base_current + R_cam_base.T @ error_cam
 
-    # Clamp per-joint step and convert to raw encoder counts
-    dq_deg = np.clip(np.rad2deg(dq_rad), -max_step_deg, max_step_deg)
-    dq_raw = dq_deg * COUNTS_PER_DEG
+    q_arm_target, converged = solve_position_ik(q_arm, q_wrist, p_base_target)
 
-    # Apply joint deltas (FK joints only; gripper unchanged)
+    # Proportionally clamp arm deltas (preserves direction toward target)
+    dq_arm_deg = np.rad2deg(q_arm_target - q_arm)
+    max_component = np.max(np.abs(dq_arm_deg))
+    if max_component > max_step_deg:
+        dq_arm_deg *= max_step_deg / max_component
+
+    # --- Orientation: 2D wrist correction (joints 3-4) ---
+    dq_wrist_deg = np.zeros(2)
+    if target_rot_cam is not None:
+        # Compute orientation at the clamped arm position we're about to command
+        q_arm_clamped = q_arm + np.deg2rad(dq_arm_deg)
+        q_after = np.concatenate([q_arm_clamped, q_wrist])
+        dq_wrist_rad = compute_wrist_correction(q_after, R_cam_base, target_rot_cam)
+        dq_wrist_deg = np.clip(np.rad2deg(dq_wrist_rad), -max_step_deg, max_step_deg)
+
+    # --- Command all 5 joints ---
+    dq_all_raw = np.concatenate([dq_arm_deg, dq_wrist_deg]) * COUNTS_PER_DEG
+
     joints = read_joints_raw(robot)
     cmd = dict(joints)
     for i, name in enumerate(FK_JOINT_NAMES):
-        cmd[name] = joints[name] + dq_raw[i]
+        cmd[name] = joints[name] + dq_all_raw[i]
     write_joints_raw(robot, cmd)
 
     return error_mag
@@ -387,8 +533,8 @@ def hover_loop(
     detector: ArucoDetector,
     side: str,
     R_cam_base: np.ndarray,
+    target_rot_cam: np.ndarray | None = None,
     hover_height_m: float = HOVER_HEIGHT_M,
-    gain: float = GAIN,
     max_step_deg: float = MAX_JOINT_STEP_DEG,
     control_hz: float = CONTROL_HZ,
     stop_event: threading.Event | None = None,
@@ -404,13 +550,13 @@ def hover_loop(
         Which tray marker and gripper marker to use.
     R_cam_base : ndarray (3, 3)
         Rotation from calibrate_camera_to_base().
+    target_rot_cam : ndarray (3, 3), optional
+        Target gripper orientation in camera frame (captured at pre_grasp).
+        If provided, wrist joints maintain vertical gripper alignment.
     stop_event : threading.Event, optional
         Set this to signal the loop to exit.
     """
     interval = 1.0 / control_hz
-    # Each arm only needs its OWN tray marker, not both.
-    # Look up the marker ID directly instead of get_tray_poses() which
-    # requires both tray markers to be visible.
     tray_marker_id = (detector.config.tray_left if side == "left"
                       else detector.config.tray_right)
     miss_streak = 0
@@ -449,7 +595,8 @@ def hover_loop(
         target = compute_hover_target(tray_pos, hover_height_m)
         error = hover_step(
             robot, grip, target, R_cam_base,
-            gain=gain, max_step_deg=max_step_deg,
+            target_rot_cam=target_rot_cam,
+            max_step_deg=max_step_deg,
         )
 
         step_count += 1
@@ -558,37 +705,58 @@ def main():
         )
         time.sleep(0.5)
 
-        # --- Diagnostic: show which marker IDs the camera can see ---
-        print("\nMarker check (verifying visibility)...")
-        frame = camera.get_frame()
-        poses = detector.detect(frame)
-        id_to_label = {
-            cfg.left_gripper: "left_gripper",
-            cfg.tray_left: "tray_left",
-            cfg.tray_right: "tray_right",
-            cfg.right_gripper: "right_gripper",
-        }
-        for mid, label in id_to_label.items():
-            if mid in poses:
-                p = poses[mid][:3, 3]
-                print(f"  ID {mid} ({label}): ({p[0]*1000:.0f}, {p[1]*1000:.0f}, {p[2]*1000:.0f}) mm")
-            else:
-                print(f"  ID {mid} ({label}): NOT DETECTED")
+        # --- Load or run calibration ---
+        saved = load_calibration()
+        if saved is not None:
+            print("\nLoaded saved calibration from", CALIBRATION_FILE)
+            R_left = saved["R_left"]
+            R_right = saved["R_right"]
+            R_target_base_left = saved["R_target_base_left"]
+            R_target_base_right = saved["R_target_base_right"]
+        else:
+            # Capture target orientation at pre_grasp (gripper is vertical).
+            # Record each arm's FK orientation in base frame now; after
+            # calibration we'll rotate into camera frame.
+            q_left = get_fk_angles_rad(left_robot)
+            R_target_base_left = forward_kinematics(q_left)[:3, :3]
+            q_right = get_fk_angles_rad(right_robot)
+            R_target_base_right = forward_kinematics(q_right)[:3, :3]
 
-        # --- Calibrate camera-to-base rotation for each arm ---
-        # Arms are now near the tray in a known configuration.
-        # Each arm wiggles 3 joints slightly to observe how the
-        # camera-frame position relates to the FK base-frame position.
-        print("\nCalibrating camera-to-base rotation...")
-        print("  Ensure both gripper markers face the camera.\n")
+            # Diagnostic: show which marker IDs the camera can see
+            print("\nMarker check (verifying visibility)...")
+            frame = camera.get_frame()
+            poses = detector.detect(frame)
+            id_to_label = {
+                cfg.left_gripper: "left_gripper",
+                cfg.tray_left: "tray_left",
+                cfg.tray_right: "tray_right",
+                cfg.right_gripper: "right_gripper",
+            }
+            for mid, label in id_to_label.items():
+                if mid in poses:
+                    p = poses[mid][:3, 3]
+                    print(f"  ID {mid} ({label}): ({p[0]*1000:.0f}, {p[1]*1000:.0f}, {p[2]*1000:.0f}) mm")
+                else:
+                    print(f"  ID {mid} ({label}): NOT DETECTED")
 
-        print("  Left arm:")
-        R_left = calibrate_camera_to_base(left_robot, camera, detector, "left")
-        print("  Left arm calibrated.\n")
+            # Calibrate camera-to-base rotation for each arm.
+            # Arms are now near the tray in a known configuration.
+            print("\nCalibrating camera-to-base rotation...")
+            print("  Ensure both gripper markers face the camera.\n")
 
-        print("  Right arm:")
-        R_right = calibrate_camera_to_base(right_robot, camera, detector, "right")
-        print("  Right arm calibrated.\n")
+            print("  Left arm:")
+            R_left = calibrate_camera_to_base(left_robot, camera, detector, "left")
+            print("  Left arm calibrated.\n")
+
+            print("  Right arm:")
+            R_right = calibrate_camera_to_base(right_robot, camera, detector, "right")
+            print("  Right arm calibrated.\n")
+
+            save_calibration(R_left, R_right, R_target_base_left, R_target_base_right)
+
+        # Convert target orientations from base frame to camera frame
+        target_rot_cam_left = R_left @ R_target_base_left
+        target_rot_cam_right = R_right @ R_target_base_right
 
         # --- Start frame provider and hover loops ---
         provider = FrameProvider(camera)
@@ -596,14 +764,14 @@ def main():
         time.sleep(0.3)
 
         threads = []
-        for robot, side, R in [
-            (left_robot, "left", R_left),
-            (right_robot, "right", R_right),
+        for robot, side, R, R_target in [
+            (left_robot, "left", R_left, target_rot_cam_left),
+            (right_robot, "right", R_right, target_rot_cam_right),
         ]:
             t = threading.Thread(
                 target=hover_loop,
                 args=(robot, provider.get_frame, detector, side, R),
-                kwargs={"stop_event": stop},
+                kwargs={"target_rot_cam": R_target, "stop_event": stop},
                 daemon=True,
             )
             t.start()
