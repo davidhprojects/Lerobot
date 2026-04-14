@@ -30,7 +30,7 @@ import numpy as np
 from pathlib import Path
 
 # Allow importing from sibling directories
-sys.path.insert(0, str(Path(__file__).parent.parent / "GNN Pipeline"))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from lerobot.robots.so_follower import SOFollowerRobotConfig, SOFollower
 from perception.camera import RealSenseCamera

@@ -24,12 +24,12 @@ import numpy as np
 from pathlib import Path
 
 # Allow importing from sibling directories
-sys.path.insert(0, str(Path(__file__).parent.parent / "GNN Pipeline"))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from lerobot.robots.so_follower import SOFollowerRobotConfig, SOFollower
 from perception.camera import RealSenseCamera
 from perception.aruco import ArucoDetector, MarkerConfig
-from forward_kinematics import (
+from algorithmic.forward_kinematics import (
     forward_kinematics, ee_position, JOINT_NAMES as FK_JOINT_NAMES, CALIBRATION_DIR
 )
 
@@ -39,7 +39,7 @@ from forward_kinematics import (
 # ============================================================
 
 PORTS_FILE = Path(__file__).parent.parent / "Setup" / "ports.json"
-WAYPOINTS_FILE = Path(__file__).parent.parent / "Data Collection" / "waypoints.json"
+WAYPOINTS_FILE = Path(__file__).parent.parent / "data_collection" / "waypoints.json"
 CALIBRATION_FILE = Path(__file__).parent / "camera_to_base_calibration.json"
 
 MOTOR_NAMES = [
@@ -123,7 +123,7 @@ def get_fk_angles_rad(robot: SOFollower) -> np.ndarray:
 # ============================================================
 
 def load_waypoints() -> dict:
-    """Load waypoints from Data Collection/waypoints.json."""
+    """Load waypoints from data_collection/waypoints.json."""
     if not WAYPOINTS_FILE.exists():
         print(f"ERROR: {WAYPOINTS_FILE} not found. Run centralized_collect.py --teach first.")
         sys.exit(1)
