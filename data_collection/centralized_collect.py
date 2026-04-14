@@ -63,6 +63,13 @@ DEPTH_ALIGNMENT_TOLERANCE_M = 0.010         # 10 mm
 GRIPPER_OPEN_DEG = 45.0                     # wide open
 GRIPPER_CLOSED_DEG = -30.0                  # clamped on tray edge
 
+# --- Automatic gripper control during teach mode ---
+# Open position  = calibration range_max - GRIPPER_OPEN_OFFSET  (per arm)
+# Closed position = calibration range_min + GRIPPER_CLOSE_OFFSET (per arm)
+# These offsets keep the gripper slightly away from its mechanical limits.
+GRIPPER_OPEN_OFFSET = 50
+GRIPPER_CLOSE_OFFSET = 30
+
 # --- Post-grasp vertical lift ---
 # How far to raise the tray after both grippers close.
 LIFT_HEIGHT_M = 0.050                       # 50 mm
@@ -217,6 +224,33 @@ def write_joints(robot: SOFollower, target: dict[str, float]):
 def read_joints_deg(robot: SOFollower) -> dict[str, float]:
     """Read current joint positions in degrees (normalized)."""
     return robot.bus.sync_read("Present_Position", normalize=True)
+
+
+def load_gripper_limits() -> dict:
+    """Load gripper range_min and range_max from calibration files for both arms.
+
+    Returns dict with keys: left_open, left_closed, right_open, right_closed
+    (raw encoder values with offsets applied).
+    """
+    left_cal_path = CALIBRATION_DIR / "left.json"
+    right_cal_path = CALIBRATION_DIR / "right.json"
+
+    if not left_cal_path.exists() or not right_cal_path.exists():
+        print(f"WARNING: Calibration files not found in {CALIBRATION_DIR}. "
+              "Automatic gripper control disabled.")
+        return None
+
+    with open(left_cal_path) as f:
+        left_cal = json.load(f)
+    with open(right_cal_path) as f:
+        right_cal = json.load(f)
+
+    return {
+        "left_open": left_cal["gripper"]["range_max"] - GRIPPER_OPEN_OFFSET,
+        "left_closed": left_cal["gripper"]["range_min"] + GRIPPER_CLOSE_OFFSET,
+        "right_open": right_cal["gripper"]["range_max"] - GRIPPER_OPEN_OFFSET,
+        "right_closed": right_cal["gripper"]["range_min"] + GRIPPER_CLOSE_OFFSET,
+    }
 
 
 # ============================================================
@@ -516,16 +550,60 @@ def pause(duration: float, recorder: EpisodeRecorder | None = None,
 # TEACH MODE
 # ============================================================
 
+def _set_gripper_teach(left_robot: SOFollower, right_robot: SOFollower,
+                       left_pos: int, right_pos: int):
+    """Move grippers to target positions during teach mode.
+
+    Enables torque on gripper motors only, commands the position, waits
+    for movement, then leaves gripper torque on so the gripper holds while
+    the operator repositions the other joints for the next phase.
+    """
+    # Enable torque on gripper only
+    left_robot.bus.sync_write("Torque_Enable", {"gripper": 1}, normalize=False)
+    right_robot.bus.sync_write("Torque_Enable", {"gripper": 1}, normalize=False)
+
+    # Command gripper position
+    left_robot.bus.sync_write("Goal_Position", {"gripper": left_pos}, normalize=False)
+    right_robot.bus.sync_write("Goal_Position", {"gripper": right_pos}, normalize=False)
+
+    time.sleep(0.5)  # let grippers reach target
+
+
+# Gripper state to apply after recording each phase during teach mode.
+# None means no change (gripper keeps its current state).
+_TEACH_GRIPPER_ACTION = {
+    "home":       "open",
+    "pre_grasp":  "open",
+    "grasp":      "closed",
+    "lifted":     "closed",
+    "translated": "closed",
+    "lowered":    "closed",
+    "release":    "open",
+}
+
+
 def teach(left_robot: SOFollower, right_robot: SOFollower):
     """
     Interactively record waypoints by physically positioning both arms.
 
     For each phase in PHASE_SEQUENCE, the operator moves both arms to the
     desired pose and presses ENTER. The joint angles are read and saved.
+    After recording, the grippers automatically move to the correct position
+    for the upcoming phase (open or closed) based on calibration limits.
     """
     print("\n=== TEACH MODE ===")
     print("For each phase, position BOTH arms and press ENTER to record.")
-    print("Motors are free to move by hand.\n")
+    print("Motors are free to move by hand.")
+    print("Grippers will be moved automatically after each phase.\n")
+
+    # Load gripper limits from calibration files
+    grip_limits = load_gripper_limits()
+    if grip_limits is None:
+        print("ERROR: Cannot run teach mode without calibration files.")
+        sys.exit(1)
+
+    print(f"  Gripper open:   left={grip_limits['left_open']}, right={grip_limits['right_open']}")
+    print(f"  Gripper closed: left={grip_limits['left_closed']}, right={grip_limits['right_closed']}\n")
 
     # Disable torque so arms move freely
     left_robot.bus.disable_torque()
@@ -565,31 +643,34 @@ def teach(left_robot: SOFollower, right_robot: SOFollower):
 
         print(f"  Recorded. Left (deg):  {_format_joints_deg(left_deg)}")
         print(f"            Right (deg): {_format_joints_deg(right_deg)}")
+
+        # Automatic gripper control after recording this phase
+        action = _TEACH_GRIPPER_ACTION.get(phase)
+        if action == "open":
+            print("  -> Moving grippers OPEN")
+            _set_gripper_teach(left_robot, right_robot,
+                               grip_limits["left_open"], grip_limits["right_open"])
+        elif action == "closed":
+            print("  -> Moving grippers CLOSED")
+            _set_gripper_teach(left_robot, right_robot,
+                               grip_limits["left_closed"], grip_limits["right_closed"])
+
         print()
 
-    # Also record the gripper open/closed raw values
-    print("--- Gripper calibration ---")
-
-    print("  Open both grippers fully, then press ENTER.")
-    input("  > ")
-    left_grip_open = read_joints(left_robot)["gripper"]
-    right_grip_open = read_joints(right_robot)["gripper"]
-    print(f"  Open: left={left_grip_open}, right={right_grip_open}")
-
-    print("  Close both grippers onto the tray edge, then press ENTER.")
-    input("  > ")
-    left_grip_closed = read_joints(left_robot)["gripper"]
-    right_grip_closed = read_joints(right_robot)["gripper"]
-    print(f"  Closed: left={left_grip_closed}, right={right_grip_closed}")
-
+    # Store the calibration-derived gripper values in waypoints for collect mode
     waypoints["_gripper"] = {
-        "left_open": left_grip_open,
-        "left_closed": left_grip_closed,
-        "right_open": right_grip_open,
-        "right_closed": right_grip_closed,
+        "left_open": grip_limits["left_open"],
+        "left_closed": grip_limits["left_closed"],
+        "right_open": grip_limits["right_open"],
+        "right_closed": grip_limits["right_closed"],
     }
 
     save_waypoints(waypoints)
+
+    # Release gripper torque when done
+    left_robot.bus.disable_torque()
+    right_robot.bus.disable_torque()
+
     print("\nTeach mode complete. You can now run --collect.")
 
 
