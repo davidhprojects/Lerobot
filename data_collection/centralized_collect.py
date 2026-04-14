@@ -86,13 +86,14 @@ LOWER_HEIGHT_M = 0.050                      # 50 mm
 # Longer duration = slower, smoother motion. Shorter = faster.
 APPROACH_DURATION_S = 5.0                   # home -> pre-grasp
 DESCEND_DURATION_S = 2.0                    # pre-grasp -> grasp position
-GRASP_CLOSE_DURATION_S = 0.5               # time to close grippers
-GRASP_SETTLE_S = 0.5                        # pause after close for firm grip
+GRASP_CLOSE_DURATION_S = 0.7               # time to close grippers
+GRASP_SETTLE_S = 0.7                        # pause after close for firm grip
 LIFT_DURATION_S = 2.0                       # vertical raise
 TRANSLATE_DURATION_S = 4.0                  # horizontal translation
 LOWER_DURATION_S = 2.0                      # lower to table
 RELEASE_OPEN_DURATION_S = 0.5              # time to open grippers
-RETREAT_DURATION_S = 2.0                    # grasp position -> home
+RETREAT_DURATION_S = 2.0                    # lowered -> release
+RETURN_HOME_DURATION_S = 5.0               # release -> home
 
 # --- Pauses ---
 INTER_PHASE_PAUSE_S = 1.0                  # brief pause between phases
@@ -577,7 +578,7 @@ _TEACH_GRIPPER_ACTION = {
     "grasp":      "closed",
     "lifted":     "closed",
     "translated": "closed",
-    "lowered":    "closed",
+    "lowered":    "open",
     "release":    "open",
 }
 
@@ -667,7 +668,35 @@ def teach(left_robot: SOFollower, right_robot: SOFollower):
 
     save_waypoints(waypoints)
 
-    # Release gripper torque when done
+    # Offer to return arms to home position
+    print("--- Return to Home ---")
+    print("  Press ENTER to move both arms back to the learned home position.")
+    input("  > ")
+
+    # Enable torque on all motors and move to home
+    home_left = waypoints["home"]["left"]
+    home_right = waypoints["home"]["right"]
+
+    # Include open grippers in the home target
+    home_left_full = dict(home_left)
+    home_left_full["gripper"] = grip_limits["left_open"]
+    home_right_full = dict(home_right)
+    home_right_full["gripper"] = grip_limits["right_open"]
+
+    # Read current position as the start of the interpolation
+    current_left = read_joints(left_robot)
+    current_right = read_joints(right_robot)
+
+    print("  Moving to home...")
+    execute_movement(
+        left_robot, right_robot,
+        current_left, home_left_full,
+        current_right, home_right_full,
+        duration=RETURN_HOME_DURATION_S,
+        phase_name="return_home",
+    )
+
+    # Release torque when done
     left_robot.bus.disable_torque()
     right_robot.bus.disable_torque()
 
@@ -901,6 +930,17 @@ def collect(
             duration=durations[("lowered", "release")],
             recorder=recorder,
             phase_name="retreat",
+        )
+        pause(INTER_PHASE_PAUSE_S, recorder, left_robot, right_robot)
+
+        # ---- Phase 10: Return to home ----
+        execute_movement(
+            left_robot, right_robot,
+            release_left, home_left_full,
+            release_right, home_right_full,
+            duration=RETURN_HOME_DURATION_S,
+            recorder=recorder,
+            phase_name="return_home",
         )
 
         # ---- Save episode ----
