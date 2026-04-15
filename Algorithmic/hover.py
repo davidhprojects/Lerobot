@@ -112,6 +112,30 @@ def interpolate_joints(
     }
 
 
+def smooth_move_single(
+    robot: SOFollower,
+    start: dict, end: dict,
+    duration: float,
+    label: str = "",
+):
+    """Smoothly interpolate one arm using minimum-jerk timing."""
+    fps = RECORD_FPS
+    interval = 1.0 / fps
+    n_steps = max(1, int(duration * fps))
+
+    if label:
+        print(f"  [{label}] {duration:.1f}s, {n_steps} steps")
+
+    for step in range(n_steps):
+        t_start = time.perf_counter()
+        t = (step + 1) / n_steps * duration
+        progress = minimum_jerk(t, duration)
+        write_joints_raw(robot, interpolate_joints(start, end, progress))
+        elapsed = time.perf_counter() - t_start
+        if interval - elapsed > 0:
+            time.sleep(interval - elapsed)
+
+
 def smooth_move(
     left_robot: SOFollower,
     right_robot: SOFollower,
@@ -175,12 +199,23 @@ class FrameProvider:
 # ============================================================
 
 def main():
+    # ── Parse optional arm argument ─────────────────────────
+    sides = ["left", "right"]
+    if len(sys.argv) > 1:
+        if sys.argv[1] in ("left", "right"):
+            sides = [sys.argv[1]]
+        else:
+            print("Usage: python hover.py [left | right]")
+            print("  No argument = both arms")
+            sys.exit(1)
+
     ports = load_ports()
+    robots: dict[str, SOFollower] = {}
 
     print("Connecting arms...")
-    left_robot = connect_arm("left", ports["left"])
-    right_robot = connect_arm("right", ports["right"])
-    print(f"  Left on {ports['left']}, Right on {ports['right']}")
+    for side in sides:
+        robots[side] = connect_arm(side, ports[side])
+        print(f"  {side.capitalize()} on {ports[side]}")
 
     print("Connecting camera...")
     camera = RealSenseCamera()
@@ -201,56 +236,66 @@ def main():
         # ── Load base transforms ────────────────────────────
         print("\nLoading base transforms...")
         base_transforms = load_base_transforms()
-        for side in ("left", "right"):
+        for side in sides:
             if side not in base_transforms:
                 print(f"  ERROR: No transform for {side}. Run calibrate.py first.")
                 raise SystemExit(1)
         print("  Loaded.")
 
-        T_base_cam_left = np.linalg.inv(base_transforms["left"])
-        T_base_cam_right = np.linalg.inv(base_transforms["right"])
+        T_base_cams = {side: np.linalg.inv(base_transforms[side]) for side in sides}
 
         # ── Load motion maps ────────────────────────────────
         print("Loading motion maps...")
-        mm_left_path = MOTION_MAP_DIR / "motion_map_left.json"
-        mm_right_path = MOTION_MAP_DIR / "motion_map_right.json"
-        missing = [p for p in [mm_left_path, mm_right_path] if not p.exists()]
-        if missing:
-            print(f"  ERROR: Missing motion map(s): {', '.join(str(p) for p in missing)}")
-            print(f"         Run record_motion_map.py + build_motion_map.py first.")
-            raise SystemExit(1)
-
-        mm_left = MotionMap(mm_left_path)
-        mm_right = MotionMap(mm_right_path)
-        print(f"  Left:  {mm_left.metadata['n_training_points']} training points, "
-              f"degree {mm_left.metadata['poly_degree']}")
-        print(f"  Right: {mm_right.metadata['n_training_points']} training points, "
-              f"degree {mm_right.metadata['poly_degree']}")
+        motion_maps: dict[str, MotionMap] = {}
+        for side in sides:
+            mm_path = MOTION_MAP_DIR / f"motion_map_{side}.json"
+            if not mm_path.exists():
+                print(f"  ERROR: {mm_path} not found.")
+                print(f"         Run record_motion_map.py + build_motion_map.py first.")
+                raise SystemExit(1)
+            motion_maps[side] = MotionMap(mm_path)
+            mm = motion_maps[side]
+            print(f"  {side.capitalize()}: {mm.metadata['n_training_points']} training points, "
+                  f"degree {mm.metadata['poly_degree']}")
 
         # ── Move to pre_grasp via waypoints ─────────────────
         waypoints = load_waypoints()
 
-        print("\nMoving to home position...")
-        current_left = read_joints_raw(left_robot)
-        current_right = read_joints_raw(right_robot)
-        smooth_move(
-            left_robot, right_robot,
-            current_left, waypoints["home"]["left"],
-            current_right, waypoints["home"]["right"],
-            duration=STARTUP_DURATION_S,
-            label="home",
-        )
-        time.sleep(0.5)
+        if len(sides) == 2:
+            print("\nMoving to home position...")
+            smooth_move(
+                robots["left"], robots["right"],
+                read_joints_raw(robots["left"]), waypoints["home"]["left"],
+                read_joints_raw(robots["right"]), waypoints["home"]["right"],
+                duration=STARTUP_DURATION_S, label="home",
+            )
+            time.sleep(0.5)
 
-        print("Moving to pre-grasp position...")
-        smooth_move(
-            left_robot, right_robot,
-            waypoints["home"]["left"], waypoints["pre_grasp"]["left"],
-            waypoints["home"]["right"], waypoints["pre_grasp"]["right"],
-            duration=APPROACH_DURATION_S,
-            label="pre_grasp",
-        )
-        time.sleep(0.5)
+            print("Moving to pre-grasp position...")
+            smooth_move(
+                robots["left"], robots["right"],
+                waypoints["home"]["left"], waypoints["pre_grasp"]["left"],
+                waypoints["home"]["right"], waypoints["pre_grasp"]["right"],
+                duration=APPROACH_DURATION_S, label="pre_grasp",
+            )
+            time.sleep(0.5)
+        else:
+            side = sides[0]
+            print("\nMoving to home position...")
+            smooth_move_single(
+                robots[side],
+                read_joints_raw(robots[side]), waypoints["home"][side],
+                duration=STARTUP_DURATION_S, label="home",
+            )
+            time.sleep(0.5)
+
+            print("Moving to pre-grasp position...")
+            smooth_move_single(
+                robots[side],
+                waypoints["home"][side], waypoints["pre_grasp"][side],
+                duration=APPROACH_DURATION_S, label="pre_grasp",
+            )
+            time.sleep(0.5)
 
         # ── Start frame provider and hover loops ────────────
         provider = FrameProvider(camera)
@@ -258,20 +303,19 @@ def main():
         time.sleep(0.3)
 
         threads = []
-        for robot, side, mm, T_base_cam in [
-            (left_robot, "left", mm_left, T_base_cam_left),
-            (right_robot, "right", mm_right, T_base_cam_right),
-        ]:
+        for side in sides:
             t = threading.Thread(
                 target=motion_map_hover_loop,
-                args=(robot, provider.get_frame, detector, side, mm, T_base_cam),
+                args=(robots[side], provider.get_frame, detector, side,
+                      motion_maps[side], T_base_cams[side]),
                 kwargs={"stop_event": stop},
                 daemon=True,
             )
             t.start()
             threads.append(t)
 
-        print("Hover tracking active. Slide the tray around. Ctrl+C to stop.\n")
+        label = sides[0] if len(sides) == 1 else "both arms"
+        print(f"Hover tracking active ({label}). Slide the tray around. Ctrl+C to stop.\n")
 
         while not stop.is_set():
             time.sleep(0.1)
@@ -284,7 +328,26 @@ def main():
         time.sleep(0.5)
         if provider is not None:
             provider.stop()
-        for r in [left_robot, right_robot]:
+
+        # ── Return to home ──────────────────────────────────
+        print("Returning to home...")
+        if len(sides) == 2:
+            smooth_move(
+                robots["left"], robots["right"],
+                read_joints_raw(robots["left"]), waypoints["home"]["left"],
+                read_joints_raw(robots["right"]), waypoints["home"]["right"],
+                duration=STARTUP_DURATION_S, label="home",
+            )
+        else:
+            side = sides[0]
+            smooth_move_single(
+                robots[side],
+                read_joints_raw(robots[side]), waypoints["home"][side],
+                duration=STARTUP_DURATION_S, label="home",
+            )
+        time.sleep(0.3)
+
+        for r in robots.values():
             r.bus.sync_write("Torque_Enable", 0, normalize=False)
             r.config.disable_torque_on_disconnect = False
             r.disconnect()

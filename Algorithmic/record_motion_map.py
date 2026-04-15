@@ -245,6 +245,16 @@ def main():
     print(f"  Tray base-frame Y = {tray_base[1]*1000:.1f} mm")
     print(f"  Hover height      = {HOVER_HEIGHT_M*1000:.0f} mm")
     print(f"  Target base Y     = {target_base_y*1000:.1f} mm")
+    print(f"\n  Tray height locked. You can move the tray out of the way now.")
+
+    # ── Disable torque, let user position grid center ────────
+    print("\nDisabling torque on positioning joints (gripper stays locked open)...")
+    for name in MOTOR_NAMES:
+        torque = 1 if name == "gripper" else 0
+        robot.bus.sync_write("Torque_Enable", {name: torque}, normalize=False)
+
+    print("  You can now move the arm freely.")
+    input("\n  Move the gripper to the CENTER of the workspace, then press Enter...")
 
     # ── Detect gripper → grid center ────────────────────────
     grip_cam = None
@@ -265,17 +275,9 @@ def main():
     grip_base = cam_to_base(grip_cam, T_base_cam)
     grid_x_min = grip_base[0] - GRID_WIDTH_M / 2
     grid_z_min = grip_base[2] - GRID_DEPTH_M / 2
-    print(f"\n  Grid center (base): X={grip_base[0]*1000:.0f}, Z={grip_base[2]*1000:.0f} mm")
+    print(f"  Grid center (base): X={grip_base[0]*1000:.0f}, Z={grip_base[2]*1000:.0f} mm")
     print(f"  Grid X range: [{grid_x_min*1000:.0f}, {(grid_x_min + GRID_WIDTH_M)*1000:.0f}] mm")
-    print(f"  Grid Z range: [{grid_z_min*1000:.0f}, {(grid_z_min + GRID_DEPTH_M)*1000:.0f}] mm")
-
-    # ── Disable torque on positioning joints ─────────────────
-    print("\nDisabling torque on positioning joints (gripper stays locked open)...")
-    print("  You can now move the arm freely.")
-    print("  The tray can be removed — it's no longer needed.\n")
-    for name in MOTOR_NAMES:
-        torque = 1 if name == "gripper" else 0
-        robot.bus.sync_write("Torque_Enable", {name: torque}, normalize=False)
+    print(f"  Grid Z range: [{grid_z_min*1000:.0f}, {(grid_z_min + GRID_DEPTH_M)*1000:.0f}] mm\n")
 
     # ── Open CSV ────────────────────────────────────────────
     csv_path = OUTPUT_DIR / f"motion_map_raw_{side}.csv"
@@ -340,15 +342,21 @@ def main():
 
                 # Overlay on camera feed
                 color = (0, 255, 0) if y_ok else (0, 0, 255)
+                y_err_mm = int(y_err * 1000)
+                if y_ok:
+                    y_label = f"GOOD:{y_err_mm}"
+                elif y_err > 0:
+                    y_label = f"HIGH:{y_err_mm}"
+                else:
+                    y_label = f"LOW: {y_err_mm}"
                 cv2.putText(
-                    display,
-                    f"Base: ({p_base[0]*1000:.0f}, {p_base[1]*1000:.0f}, {p_base[2]*1000:.0f}) mm",
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2,
+                    display, y_label,
+                    (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 2,
                 )
                 cv2.putText(
                     display,
-                    f"Y err: {y_err*1000:+.1f} mm  (tol: +/-{Y_TOLERANCE_M*1000:.0f})",
-                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2,
+                    f"Base: ({p_base[0]*1000:.0f}, {p_base[1]*1000:.0f}, {p_base[2]*1000:.0f}) mm",
+                    (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2,
                 )
             else:
                 cv2.putText(

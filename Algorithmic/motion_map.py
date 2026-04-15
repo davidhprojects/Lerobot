@@ -15,13 +15,25 @@ from pathlib import Path
 
 MOTOR_NAMES = [
     "shoulder_pan", "shoulder_lift", "elbow_flex",
-    "wrist_flex", "wrist_roll", "gripper",
+    "wrist_flex", "wrist_roll",
 ]
 
 # Default tuning (can be overridden via kwargs)
-MAX_JOINT_STEP_RAW = 3.0 * (4096.0 / 360.0)  # 3 degrees in raw encoder counts
-POSITION_TOLERANCE_M = 0.010  # 10 mm dead-zone
-CONTROL_HZ = 15
+MAX_JOINT_STEP_RAW = 6.0 * (4096.0 / 360.0)  # 10 degrees in raw encoder counts
+POSITION_TOLERANCE_M = 0.012  # 10 mm dead-zone
+CONTROL_HZ = 30
+
+# Raise-on-traverse: lift the arm proportionally to XZ error so it
+# approaches the target from above instead of swooping through the tray.
+# The offset is applied per-joint in raw encoder counts, scaled by
+# (xz_dist / RAISE_DIST_SCALE).  At xz_dist == RAISE_DIST_SCALE the
+# full offset is applied; at xz_dist == 0 the offset is zero.
+RAISE_DIST_SCALE_M = 0.050  # 100mm of xz error = 1x the raise offset
+RAISE_OFFSETS = {
+    "shoulder_lift": 40,
+    "elbow_flex": -120,
+    "wrist_flex": 10,
+}
 
 
 class MotionMap:
@@ -112,6 +124,9 @@ def motion_map_hover_loop(
     interval = 1.0 / control_hz
     step_count = 0
     miss_streak = 0
+    smooth_bx = None  # EMA-smoothed tray base position
+    smooth_bz = None
+    alpha = 0.2  # EMA smoothing factor (0 = ignore new, 1 = no smoothing)
 
     tray_marker_id = (detector.config.tray_left if side == "left"
                       else detector.config.tray_right)
@@ -143,8 +158,17 @@ def motion_map_hover_loop(
 
         # ── Transform tray to base frame ────────────────────
         tray_base = cam_to_base(tray_cam, T_base_cam)
-        target_bx = tray_base[0]
-        target_bz = tray_base[2]
+
+        # Smooth the tray position to reduce marker detection noise
+        if smooth_bx is None:
+            smooth_bx = tray_base[0]
+            smooth_bz = tray_base[2]
+        else:
+            smooth_bx = alpha * tray_base[0] + (1 - alpha) * smooth_bx
+            smooth_bz = alpha * tray_base[2] + (1 - alpha) * smooth_bz
+
+        target_bx = smooth_bx
+        target_bz = smooth_bz
 
         # ── Bounds check ────────────────────────────────────
         if not motion_map.in_bounds(target_bx, target_bz):
@@ -157,17 +181,27 @@ def motion_map_hover_loop(
         # ── Evaluate polynomial ─────────────────────────────
         target_joints = motion_map.evaluate(target_bx, target_bz)
 
-        # ── Read current joints ─────────────────────────────
-        current_joints = robot.bus.sync_read("Present_Position", normalize=False)
-
-        # ── Dead-zone check ─────────────────────────────────
+        # ── Measure XZ distance (gripper to target) ─────────
         grip_cam = detector.get_gripper_pose(poses, side)
-        skip = False
+        xz_dist = None
         if grip_cam is not None:
             grip_base = cam_to_base(grip_cam, T_base_cam)
             xz_dist = np.sqrt(
                 (grip_base[0] - target_bx) ** 2 + (grip_base[2] - target_bz) ** 2
             )
+
+        # ── Raise-on-traverse: lift proportional to XZ error ──
+        if xz_dist is not None:
+            raise_scale = xz_dist / RAISE_DIST_SCALE_M
+            for name, offset in RAISE_OFFSETS.items():
+                target_joints[name] += offset * raise_scale
+
+        # ── Read current joints ─────────────────────────────
+        current_joints = robot.bus.sync_read("Present_Position", normalize=False)
+
+        # ── Dead-zone check ─────────────────────────────────
+        skip = False
+        if xz_dist is not None:
             if xz_dist < position_tolerance:
                 skip = True
         else:
@@ -180,13 +214,16 @@ def motion_map_hover_loop(
                 skip = True
 
         if not skip:
-            # ── Clamp and command ───────────────────────────
-            cmd = dict(current_joints)
-            for name in MOTOR_NAMES:
-                delta = target_joints[name] - current_joints[name]
-                if abs(delta) > max_step_raw:
-                    delta = max_step_raw if delta > 0 else -max_step_raw
-                cmd[name] = current_joints[name] + delta
+            # ── Proportional clamp (preserves joint-space direction) ──
+            deltas = {name: target_joints[name] - current_joints[name]
+                      for name in MOTOR_NAMES}
+            max_abs = max(abs(d) for d in deltas.values())
+            if max_abs > max_step_raw:
+                scale = max_step_raw / max_abs
+                deltas = {name: d * scale for name, d in deltas.items()}
+
+            cmd = {name: current_joints[name] + deltas[name]
+                   for name in MOTOR_NAMES}
             robot.bus.sync_write("Goal_Position", cmd, normalize=False)
 
         # ── Periodic logging ────────────────────────────────

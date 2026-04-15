@@ -22,9 +22,8 @@ class MarkerConfig:
         OpenCV dictionary constant.
     marker_size_m : float
         Physical side length of gripper/tray markers in meters.
-    base_marker_size_m : float
-        Physical side length of arm-base markers in meters.  Larger tags
-        improve calibration accuracy.
+    large_marker_size_m : float
+        Physical side length of base + gripper markers in meters.
     left_base : int
         Marker ID on the left arm's base.
     left_gripper : int
@@ -41,8 +40,8 @@ class MarkerConfig:
         Horizontal distance between the two tray markers in meters.
     """
     dictionary: int = cv2.aruco.DICT_APRILTAG_16h5  # technically AprilTags
-    marker_size_m: float = 0.015       # 15 mm gripper/tray tags
-    base_marker_size_m: float = 0.030  # 30 mm base tags (larger for accuracy)
+    marker_size_m: float = 0.015       # 15 mm tray tags
+    large_marker_size_m: float = 0.030 # 30 mm base + gripper tags
     # IDs 0-5, left to right across the camera frame
     left_base: int = 0
     left_gripper: int = 1
@@ -91,12 +90,15 @@ class ArucoDetector:
         self.aruco_params = cv2.aruco.DetectorParameters()
         self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
         self.labels = _build_labels(config)
-        self._base_ids = {config.left_base, config.right_base}
+        self._large_ids = {
+            config.left_base, config.right_base,
+            config.left_gripper, config.right_gripper,
+        }
 
     def _marker_size(self, marker_id: int) -> float:
         """Return the physical marker size for a given marker ID."""
-        if marker_id in self._base_ids:
-            return self.config.base_marker_size_m
+        if marker_id in self._large_ids:
+            return self.config.large_marker_size_m
         return self.config.marker_size_m
 
     def _solve_pnp_single(

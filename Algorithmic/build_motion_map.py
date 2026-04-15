@@ -17,6 +17,8 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 INPUT_DIR = Path(__file__).parent
 OUTPUT_DIR = Path(__file__).parent
 
@@ -25,15 +27,45 @@ VALIDATION_FRACTION = 0.15  # hold out 15% for validation
 
 MOTOR_NAMES = [
     "shoulder_pan", "shoulder_lift", "elbow_flex",
-    "wrist_flex", "wrist_roll", "gripper",
+    "wrist_flex", "wrist_roll",
 ]
+
+# Gravity compensation offsets (raw encoder counts), per arm.
+# Added to recorded joint values before fitting to counteract sag from
+# hand-supporting the arm during recording.  Tune these empirically.
+GRAVITY_OFFSETS = {
+    "left": {
+        "shoulder_lift": -40,   # + is forward, - is toward home
+        "elbow_flex": -30,    # + is lower
+        "wrist_flex": 0,     # + is toward base
+    },
+    "right": {
+        "shoulder_lift": -40, # + is forward, - is toward home
+        "elbow_flex": -40,  # + is lower
+        "wrist_flex": 0,   # + is toward base
+    },
+}
+
+# Gripper-to-marker offset in base frame (meters), per arm.
+# Shifts where the gripper targets relative to the tray marker.
+# Signs depend on each arm's base-frame orientation — tune independently.
+POSITION_OFFSET = {
+    "left": {
+        "base_x": -0.03,
+        "base_z": 0.0,
+    },
+    "right": {
+        "base_x": 0.0,
+        "base_z": 0.0,
+    },
+}
 
 
 # ============================================================
 # CSV loading
 # ============================================================
 
-def load_raw_csv(path: Path) -> tuple[dict, np.ndarray, np.ndarray]:
+def load_raw_csv(path: Path) -> tuple[dict, np.ndarray, np.ndarray, np.ndarray]:
     """
     Load raw recording CSV.
 
@@ -41,8 +73,10 @@ def load_raw_csv(path: Path) -> tuple[dict, np.ndarray, np.ndarray]:
     -------
     metadata : dict
         Parsed from the first comment line.
-    positions : ndarray (N, 3)
-        base_x, base_y, base_z for each sample.
+    cam_positions : ndarray (N, 3)
+        cam_x, cam_y, cam_z for each sample (ground truth, never changes).
+    base_positions : ndarray (N, 3)
+        base_x, base_y, base_z as recorded (may be stale if calibration changed).
     joints : ndarray (N, 6)
         Raw encoder values for each sample.
     """
@@ -53,9 +87,15 @@ def load_raw_csv(path: Path) -> tuple[dict, np.ndarray, np.ndarray]:
         metadata = json.loads(first_line[1:].strip())
 
         reader = csv.DictReader(f)
+        cam_list = []
         pos_list = []
         joint_list = []
         for row in reader:
+            cam_list.append([
+                float(row["cam_x"]),
+                float(row["cam_y"]),
+                float(row["cam_z"]),
+            ])
             pos_list.append([
                 float(row["base_x"]),
                 float(row["base_y"]),
@@ -63,7 +103,7 @@ def load_raw_csv(path: Path) -> tuple[dict, np.ndarray, np.ndarray]:
             ])
             joint_list.append([int(row[name]) for name in MOTOR_NAMES])
 
-    return metadata, np.array(pos_list), np.array(joint_list)
+    return metadata, np.array(cam_list), np.array(pos_list), np.array(joint_list)
 
 
 # ============================================================
@@ -189,14 +229,58 @@ def main():
 
     # ── Load ────────────────────────────────────────────────
     print(f"Loading {csv_path}...")
-    metadata, positions, joints = load_raw_csv(csv_path)
-    target_y = metadata["target_base_y"]
-    print(f"  {len(positions)} samples (pre-filtered by Y during recording)")
-    print(f"  target_base_y = {target_y*1000:.1f} mm")
+    metadata, cam_positions, _, joints = load_raw_csv(csv_path)
+    print(f"  {len(cam_positions)} samples (pre-filtered by Y during recording)")
+
+    # ── Re-transform cam→base using current calibration ─────
+    # The CSV stores base_x/y/z from recording time, but the calibration
+    # may have changed since then.  Re-transform from camera-frame
+    # (ground truth) using the current base_transforms.json.
+    from algorithmic.calibrate import load_base_transforms
+    base_transforms = load_base_transforms()
+    if side not in base_transforms:
+        print(f"  ERROR: No transform for {side}. Run calibrate.py first.")
+        sys.exit(1)
+    T_base_cam = np.linalg.inv(base_transforms[side])
+
+    # Transform all cam positions to base frame
+    ones = np.ones((len(cam_positions), 1))
+    cam_h = np.hstack([cam_positions, ones])  # (N, 4)
+    base_h = (T_base_cam @ cam_h.T).T         # (N, 4)
+    positions = base_h[:, :3]                  # (N, 3)
+
+    target_y = float(np.median(positions[:, 1]))
+    print(f"  Re-transformed to current calibration")
+    print(f"  target_base_y = {target_y*1000:.1f} mm (median of data)")
 
     if len(positions) < 20:
         print("ERROR: Too few samples. Record more data.")
         sys.exit(1)
+
+    # ── Apply gravity compensation offsets ──────────────────
+    grav = GRAVITY_OFFSETS.get(side, {})
+    any_grav = any(v != 0 for v in grav.values())
+    if any_grav:
+        print("  Applying gravity offsets:")
+        for name, offset in grav.items():
+            if offset != 0:
+                col = MOTOR_NAMES.index(name)
+                joints[:, col] += offset
+                print(f"    {name}: {offset:+d} counts")
+
+    # ── Apply position offset ───────────────────────────────
+    # Shifts the recorded gripper positions so the polynomial learns to
+    # target an offset location relative to the tray marker.
+    pos_off = POSITION_OFFSET.get(side, {})
+    any_pos = any(v != 0 for v in pos_off.values())
+    if any_pos:
+        print("  Applying position offsets:")
+        if pos_off.get("base_x", 0) != 0:
+            positions[:, 0] += pos_off["base_x"]
+            print(f"    base_x: {pos_off['base_x']*1000:+.1f} mm")
+        if pos_off.get("base_z", 0) != 0:
+            positions[:, 2] += pos_off["base_z"]
+            print(f"    base_z: {pos_off['base_z']*1000:+.1f} mm")
 
     # ── Downsample ──────────────────────────────────────────
     positions, joints = downsample_grid(positions, joints, target_y)
