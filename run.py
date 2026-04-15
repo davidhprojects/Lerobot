@@ -2,7 +2,7 @@
 run.py - State machine for bimanual tray lift sequence.
 
 Moves both SO-101 arms through a coordinated sequence:
-  HOME -> PRE_GRASP -> HOVER -> APPROACH -> LIFT_WAITING -> LIFTING
+  HOME -> PRE_GRASP -> HOVER -> APPROACH -> LIFT_WAITING -> LIFTING -> TRANSLATE -> LOWER -> RELEASE -> HOME
 
 HOME and PRE_GRASP are synchronized (both arms move together).
 From HOVER onward, each arm runs independently in its own thread.
