@@ -1,5 +1,6 @@
-# Using ArUco markers for precise pose estimation of the tray and grippers.
-# There are 4 tags: one on each gripper, and two on the tray (left and right).
+# Using ArUco markers for precise pose estimation of the tray, grippers,
+# and arm bases.  There are 6 tags: one on each arm base, one on each
+# gripper, and two on the tray (left and right).
 #
 # cv2.aruco.estimatePoseSingleMarkers was removed in OpenCV 4.8.
 # We use cv2.solvePnP with the known marker geometry instead.
@@ -18,29 +19,37 @@ class MarkerConfig:
     Attributes
     ----------
     dictionary : int
-        OpenCV dictionary constant
+        OpenCV dictionary constant.
     marker_size_m : float
-        Physical side length of each printed marker in meters.
-    tray_left : int
-        Marker ID on the left side of the tray.
-    tray_right : int
-        Marker ID on the right side of the tray.
+        Physical side length of gripper/tray markers in meters.
+    large_marker_size_m : float
+        Physical side length of base + gripper markers in meters.
+    left_base : int
+        Marker ID on the left arm's base.
     left_gripper : int
         Marker ID on the left arm's gripper.
+    right_base : int
+        Marker ID on the right arm's base.
+    tray_right : int
+        Marker ID on the right side of the tray.
     right_gripper : int
         Marker ID on the right arm's gripper.
+    tray_left : int
+        Marker ID on the left side of the tray.
     tray_marker_spacing_m : float
         Horizontal distance between the two tray markers in meters.
-        Used to compute tilt angle from their height difference.
     """
-    dictionary: int = cv2.aruco.DICT_APRILTAG_16h5 # We're technically using AprilTags, not ArUco 
-    marker_size_m: float = 0.015  # 15 mm tag size (inner pattern, not border): we learned this the hard way
-    # 1-4: left to right across the camera frame
+    dictionary: int = cv2.aruco.DICT_APRILTAG_16h5  # technically AprilTags
+    marker_size_m: float = 0.015       # 15 mm tray tags
+    large_marker_size_m: float = 0.030 # 30 mm base + gripper tags
+    # IDs 0-5, left to right across the camera frame
+    left_base: int = 0
     left_gripper: int = 1
-    tray_left: int = 6
+    right_base: int = 2
     tray_right: int = 3
     right_gripper: int = 4
-    tray_marker_spacing_m: float = 0.14 # 140 mm between the 2 tray markers
+    tray_left: int = 5
+    tray_marker_spacing_m: float = 0.14  # 140 mm between the 2 tray markers
 
 
 # readable labels for visualization
@@ -49,10 +58,12 @@ MARKER_LABELS: dict[str, str] = {}  # populated by _build_labels()
 
 def _build_labels(config: MarkerConfig) -> dict[int, str]:
     return {
-        config.tray_left: "tray_left",
-        config.tray_right: "tray_right",
+        config.left_base: "left_base",
         config.left_gripper: "left_gripper",
+        config.right_base: "right_base",
+        config.tray_right: "tray_right",
         config.right_gripper: "right_gripper",
+        config.tray_left: "tray_left",
     }
 
 
@@ -79,46 +90,73 @@ class ArucoDetector:
         self.aruco_params = cv2.aruco.DetectorParameters()
         self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
         self.labels = _build_labels(config)
+        self._large_ids = {
+            config.left_base, config.right_base,
+            config.left_gripper, config.right_gripper,
+        }
 
-    def _estimate_pose(self, corners: tuple) -> tuple[np.ndarray, np.ndarray]:
+    def _marker_size(self, marker_id: int) -> float:
+        """Return the physical marker size for a given marker ID."""
+        if marker_id in self._large_ids:
+            return self.config.large_marker_size_m
+        return self.config.marker_size_m
+
+    def _solve_pnp_single(
+        self, corner: np.ndarray, marker_size_m: float,
+    ) -> tuple[np.ndarray, np.ndarray, bool]:
+        """Run solvePnP for one marker corner set.
+
+        Returns (rvec (3,), tvec (3,), success).
         """
-        Estimate rotation and translation for each detected marker via solvePnP.
-
-        Replaces the removed cv2.aruco.estimatePoseSingleMarkers (OpenCV 4.8+).
-
-        Parameters
-        ----------
-        corners : tuple of ndarray
-            Corner pixel coordinates from detectMarkers().
-
-        Returns
-        -------
-        rvecs : ndarray, shape (N, 1, 3)
-        tvecs : ndarray, shape (N, 1, 3)
-        """
-        half = self.config.marker_size_m / 2.0
+        half = marker_size_m / 2.0
         obj_pts = np.array([
             [-half,  half, 0.0],
             [ half,  half, 0.0],
             [ half, -half, 0.0],
             [-half, -half, 0.0],
         ], dtype=np.float32)
+        img_pts = corner.reshape(4, 2).astype(np.float32)
+        ok, rvec, tvec = cv2.solvePnP(
+            obj_pts, img_pts,
+            self.camera_matrix, self.dist_coeffs,
+            flags=cv2.SOLVEPNP_IPPE_SQUARE,
+        )
+        if ok:
+            return rvec.reshape(3), tvec.reshape(3), True
+        return np.zeros(3), np.zeros(3), False
+
+    def _estimate_pose(
+        self, corners: tuple, ids: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Estimate rotation and translation for each detected marker via solvePnP.
+
+        Uses the correct physical marker size per ID (base tags may differ
+        from gripper/tray tags).
+
+        Parameters
+        ----------
+        corners : tuple of ndarray
+            Corner pixel coordinates from detectMarkers().
+        ids : ndarray, optional
+            Marker IDs (used to look up per-marker size).  If None, the
+            default ``marker_size_m`` is used for all markers.
+
+        Returns
+        -------
+        rvecs : ndarray, shape (N, 1, 3)
+        tvecs : ndarray, shape (N, 1, 3)
+        """
+        flat_ids = ids.flatten() if ids is not None else None
 
         rvecs = []
         tvecs = []
-        for corner in corners:
-            img_pts = corner.reshape(4, 2).astype(np.float32)
-            ok, rvec, tvec = cv2.solvePnP(
-                obj_pts, img_pts,
-                self.camera_matrix, self.dist_coeffs,
-                flags=cv2.SOLVEPNP_IPPE_SQUARE,
-            )
-            if ok:
-                rvecs.append(rvec.reshape(1, 3))
-                tvecs.append(tvec.reshape(1, 3))
-            else:
-                rvecs.append(np.zeros((1, 3)))
-                tvecs.append(np.zeros((1, 3)))
+        for i, corner in enumerate(corners):
+            mid = int(flat_ids[i]) if flat_ids is not None else -1
+            size = self._marker_size(mid) if mid >= 0 else self.config.marker_size_m
+            rv, tv, ok = self._solve_pnp_single(corner, size)
+            rvecs.append(rv.reshape(1, 3))
+            tvecs.append(tv.reshape(1, 3))
 
         return np.array(rvecs), np.array(tvecs)
 
@@ -142,7 +180,7 @@ class ArucoDetector:
         if ids is None or len(ids) == 0:
             return {}
 
-        rvecs, tvecs = self._estimate_pose(corners)
+        rvecs, tvecs = self._estimate_pose(corners, ids)
 
         poses: dict[int, np.ndarray] = {}
         for i, marker_id in enumerate(ids.flatten()):
@@ -172,7 +210,7 @@ class ArucoDetector:
         if ids is None or len(ids) == 0:
             return corners, ids, None, None
 
-        rvecs, tvecs = self._estimate_pose(corners)
+        rvecs, tvecs = self._estimate_pose(corners, ids)
         return corners, ids, rvecs, tvecs
 
     def get_tray_poses(self, poses: dict[int, np.ndarray]) -> dict[str, np.ndarray] | None:
@@ -213,6 +251,50 @@ class ArucoDetector:
         """
         marker_id = (self.config.left_gripper if side == "left"
                      else self.config.right_gripper)
+
+        if marker_id not in poses:
+            return None
+
+        return poses[marker_id][:3, 3].copy()
+
+    def get_base_pose(self, poses: dict[int, np.ndarray],
+                      side: str) -> np.ndarray | None:
+        """
+        Extract an arm base's full 4x4 transform from its ArUco marker.
+
+        Parameters
+        ----------
+        side : 'left' or 'right'
+
+        Returns
+        -------
+        T : ndarray (4, 4) or None if marker not visible
+            Homogeneous transform (base-tag frame in camera frame).
+        """
+        marker_id = (self.config.left_base if side == "left"
+                     else self.config.right_base)
+
+        if marker_id not in poses:
+            return None
+
+        return poses[marker_id].copy()
+
+    def get_tray_marker_pose(self, poses: dict[int, np.ndarray],
+                             side: str) -> np.ndarray | None:
+        """
+        Extract one tray marker's 3D position.
+
+        Parameters
+        ----------
+        side : 'left' or 'right'
+            Which tray marker (left arm tracks tray_left, right tracks tray_right).
+
+        Returns
+        -------
+        position : ndarray (3,) or None if marker not visible
+        """
+        marker_id = (self.config.tray_left if side == "left"
+                     else self.config.tray_right)
 
         if marker_id not in poses:
             return None

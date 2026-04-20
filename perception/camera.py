@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pyrealsense2 as rs
 
-PORTS_FILE = Path(__file__).parent.parent.parent / "Setup" / "ports.json"
+PORTS_FILE = Path(__file__).parent.parent / "Setup" / "ports.json"
 
 # Target capture resolution and frame rate
 COLOR_WIDTH = 640

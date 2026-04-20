@@ -20,7 +20,7 @@ from lerobot.motors.feetech import FeetechMotorsBus
 ARMS = ["right", "left"]
 PORTS_FILE = Path(__file__).parent / "ports.json"
 
-MOTOR_NAME = "elbow_flex"
+MOTOR_NAME = "shoulder_pan"
 
 MOTORS = {
     "shoulder_pan":  Motor(1, "sts3215", MotorNormMode.DEGREES),
@@ -46,7 +46,21 @@ REGISTERS = [
     (11, 2, "Max_Angle_Limit (raw)"),
     (14, 1, "Max_Voltage_Limit"),
     (15, 1, "Min_Voltage_Limit"),
+    (16, 2, "Max_Torque_Limit"),
+    (18, 1, "Phase"),
+    (19, 1, "Unloading_Condition"),
+    (21, 1, "P_Coefficient"),
+    (22, 1, "D_Coefficient"),
+    (23, 1, "I_Coefficient"),
+    (24, 2, "Minimum_Startup_Force"),
+    (28, 2, "Protection_Current"),
+    (33, 1, "Operating_Mode"),
+    (34, 1, "Protective_Torque"),
+    (35, 1, "Protection_Time"),
+    (36, 1, "Overload_Torque"),
     (40, 1, "Torque_Enable"),
+    (41, 1, "Acceleration"),
+    (48, 2, "Torque_Limit"),
     (55, 1, "Lock"),
     (42, 2, "Goal_Position (raw)"),
     (56, 2, "Present_Position (raw)"),
@@ -56,6 +70,8 @@ REGISTERS = [
     (63, 1, "Present_Temperature"),
     (65, 1, "Error_Status"),
     (66, 1, "Moving"),
+    (69, 2, "Present_Current"),
+    (85, 1, "Maximum_Acceleration"),
 ]
 
 with open(PORTS_FILE) as f:
@@ -148,24 +164,83 @@ def single_motor_diagnostics(arm_name):
         print(f"{label:<30} {val:>6}  {note}")
 
     print()
-    print("Nudge test: reading position, sending +200 raw counts, reading again...")
     import time
+
+    # Read angle limits to find the midpoint of the motor's usable range
+    min_limit = read_raw(bus, 9, 2, motor_id) or 0
+    max_limit = read_raw(bus, 11, 2, motor_id) or 4095
+    midpoint = (min_limit + max_limit) // 2
+
+    print("Movement test with write verification:")
     pos_before = read_raw(bus, 56, 2, motor_id)
-    if pos_before is not None:
-        nudge_target = (pos_before + 200) % 4096
-        bus._write(40, 1, motor_id, 1, raise_on_error=False)
-        time.sleep(0.1)
-        bus._write(42, 2, motor_id, nudge_target, raise_on_error=False)
-        time.sleep(0.5)
-        pos_after = read_raw(bus, 56, 2, motor_id)
-        bus._write(42, 2, motor_id, pos_before, raise_on_error=False)
-        bus._write(40, 1, motor_id, 0, raise_on_error=False)
-        delta = None if pos_after is None else abs(pos_after - pos_before)
-        print(f"  Position before: {pos_before}")
-        print(f"  Position after : {pos_after}")
-        print(f"  Delta          : {delta}  ({'MOTOR MOVED' if delta and delta > 10 else 'NO MOVEMENT DETECTED'})")
+    if pos_before is None:
+        print("  Could not read position — skipping test.")
+        bus.port_handler.closePort()
+        print("\nDone.")
+        return
+
+    target = midpoint
+    print(f"  Current position : {pos_before}")
+    print(f"  Target (midpoint): {target}")
+    print(f"  Distance         : {abs(target - pos_before)} counts\n")
+
+    # Step 1: Clear Lock and disable torque to get a clean state
+    print("  Step 1: Clearing Lock and disabling torque...")
+    bus._write(55, 1, motor_id, 0, raise_on_error=False)  # Lock = 0
+    bus._write(40, 1, motor_id, 0, raise_on_error=False)  # Torque off
+    time.sleep(0.1)
+    lock_val = read_raw(bus, 55, 1, motor_id)
+    torque_val = read_raw(bus, 40, 1, motor_id)
+    print(f"    Lock = {lock_val}, Torque = {torque_val}")
+
+    # Step 2: Write Goal_Position BEFORE enabling torque
+    print(f"\n  Step 2: Writing Goal_Position = {target}...")
+    bus._write(42, 2, motor_id, target, raise_on_error=False)
+    time.sleep(0.05)
+    goal_readback = read_raw(bus, 42, 2, motor_id)
+    print(f"    Goal readback: {goal_readback}  (expected {target})")
+    if goal_readback != target:
+        print(f"    *** WRITE FAILED — Goal_Position did not update! ***")
+
+    # Step 3: Enable torque and watch position over 2 seconds
+    print(f"\n  Step 3: Enabling torque, monitoring for 2 seconds...")
+    bus._write(40, 1, motor_id, 1, raise_on_error=False)
+    time.sleep(0.05)
+    torque_readback = read_raw(bus, 40, 1, motor_id)
+    torque_limit = read_raw(bus, 48, 2, motor_id)
+    print(f"    Torque_Enable readback: {torque_readback}  (expected 1) — {'OK' if torque_readback == 1 else '*** FAILED ***'}")
+    print(f"    Torque_Limit: {torque_limit}  (should be 1000 = 100%){' — *** ZERO = motor cannot produce force ***' if torque_limit == 0 else ''}")
+
+    for i in range(8):
+        time.sleep(0.25)
+        pos = read_raw(bus, 56, 2, motor_id)
+        speed = read_raw(bus, 58, 2, motor_id)
+        load = read_raw(bus, 60, 2, motor_id)
+        err = read_raw(bus, 65, 1, motor_id)
+        goal = read_raw(bus, 42, 2, motor_id)
+        print(f"    t={0.25*(i+1):.2f}s  pos={pos:>5}  goal={goal:>5}  speed={speed:>5}  load={load:>5}  err={err}")
+
+    pos_after = read_raw(bus, 56, 2, motor_id)
+
+    # Step 4: Return to original position and disable torque
+    bus._write(42, 2, motor_id, pos_before, raise_on_error=False)
+    time.sleep(1.0)
+    bus._write(40, 1, motor_id, 0, raise_on_error=False)
+    bus._write(55, 1, motor_id, 0, raise_on_error=False)
+
+    delta = abs(pos_after - pos_before) if pos_after is not None else 0
+    expected = abs(target - pos_before)
+    print(f"\n  Summary:")
+    print(f"    Start    : {pos_before}")
+    print(f"    Target   : {target}")
+    print(f"    Reached  : {pos_after}")
+    print(f"    Moved    : {delta} / {expected} counts ({100*delta/expected:.0f}%)" if expected else "")
+    if delta > expected * 0.8:
+        print(f"    Result   : PASS")
+    elif delta > 50:
+        print(f"    Result   : PARTIAL — motor moved but fell short")
     else:
-        print("  Could not read position — skipping nudge test.")
+        print(f"    Result   : FAIL — motor did not move to target")
 
     bus.port_handler.closePort()
 

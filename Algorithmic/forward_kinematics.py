@@ -73,7 +73,7 @@ class SO101Params:
     shoulder_lift_rpy: tuple = (-1.5708, -1.5708, 0.0)
 
     # Joint 3 — elbow_flex  (upper_arm_link → lower_arm_link)
-    elbow_flex_xyz: tuple = (-0.11257, -0.028, 0.0)
+    elbow_flex_xyz: tuple = (-0.14257, -0.028, 0.0)
     elbow_flex_rpy: tuple = (0.0, 0.0, 1.5708)
 
     # Joint 4 — wrist_flex  (lower_arm_link → wrist_link)
@@ -235,10 +235,7 @@ def _connect_arm(arm_name, ports):
         calibration_dir=CALIBRATION_DIR,
     )
     robot = SOFollower(config)
-    robot.bus.connect()
-    if robot.calibration:
-        robot.bus.write_calibration(robot.calibration)
-    robot.configure()
+    robot.connect()
     robot.bus.disable_torque()
     return robot
 
@@ -296,7 +293,7 @@ def main():
     print("Move the arm around — FK output updates live. Press Ctrl+C to stop.\n")
     _run_live(robot)
 
-    robot.bus.disconnect()
+    robot.disconnect()
     print("Disconnected.")
 
 

@@ -67,7 +67,8 @@ try:
         action = {k: right_origin[k] + delta[k] for k in delta}
         robot.send_action(action)
 finally:
-    robot.bus.disable_torque()
-    robot.bus.disconnect()
-    teleop_device.bus.disconnect()
+    robot.bus.sync_write("Torque_Enable", 0, normalize=False)
+    robot.config.disable_torque_on_disconnect = False
+    robot.disconnect()
+    teleop_device.disconnect()
     print("Disconnected.")

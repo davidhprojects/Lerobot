@@ -6,7 +6,7 @@ semantic role (tray_left, tray_right, left_gripper, right_gripper), and
 annotated with their 3D position in camera frame.
 
 Usage:
-    python "GNN Pipeline/test_perception.py"
+    python perception/test_perception.py
 
 Press ctrl+C to end.
 """
@@ -15,7 +15,7 @@ import sys
 import cv2
 import numpy as np
 
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))
 
 from perception.camera import RealSenseCamera
 from perception.aruco import ArucoDetector, MarkerConfig

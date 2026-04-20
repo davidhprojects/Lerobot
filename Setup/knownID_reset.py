@@ -90,8 +90,8 @@ print(f"  Max voltage limit: {max_v_before * 0.1:.1f} V  (raw={max_v_before})" i
 
 # Set limits wide enough that no real voltage can trigger the error.
 # 0 = 0.0 V (min), 254 = 25.4 V (max) — effectively disabled.
-NEW_MIN = 40
-NEW_MAX = 150
+NEW_MIN = 60
+NEW_MAX = 140
 
 print()
 print("Disabling torque and unlocking EEPROM...")
