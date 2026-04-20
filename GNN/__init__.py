@@ -9,6 +9,7 @@ from GNN.entities import (
     rotation_matrix_to_quaternion,
 )
 from GNN.graph_builder import VelocityTracker, GraphData, build_graph
+from GNN.scene_observer import SceneObserver
 
 __all__ = [
     "EntityObs",
@@ -18,4 +19,5 @@ __all__ = [
     "CONTACT_THRESHOLD_M",
     "rotation_matrix_to_quaternion",
     "VelocityTracker", "GraphData", "build_graph",
+    "SceneObserver",
 ]
