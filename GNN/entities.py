@@ -22,6 +22,7 @@ Node feature layout (NODE_FEATURE_DIM = 12):
 """
 
 from dataclasses import dataclass
+
 from typing import Optional
 
 import numpy as np
