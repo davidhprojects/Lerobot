@@ -2,7 +2,9 @@
 Node definitions, feature layout, and per-entity observation type for the
 bimanual tray-lifting scene graph.
 
-All positions are expressed in the D435i camera frame (meters).
+All positions are expressed in an arm's base frame (meters) — each arm's
+SceneObserver produces a graph in its own base coordinates, matching
+run.py's per-arm ``T_base_cam`` / ``cam_to_base`` convention.
 Quaternions use scipy convention: (x, y, z, w).
 
 Node ordering is fixed so the GNN's decoder can read a specific arm's
@@ -56,11 +58,11 @@ class EntityObs:
     name : str
         Stable key used by VelocityTracker to persist previous-frame state.
     position : ndarray, shape (3,)
-        XYZ position in camera frame, meters.
+        XYZ position in the observer's arm base frame, meters.
     node_type : ndarray, shape (2,)
         One-hot type flag — use TYPE_ARM or TYPE_TRAY.
     velocity : ndarray, shape (3,)
-        Linear velocity in camera frame, meters/second. Typically produced
+        Linear velocity in the observer's arm base frame, meters/second. Typically produced
         by VelocityTracker before calling build_graph.
     orientation : ndarray, shape (4,), optional
         Quaternion (x, y, z, w). Set to None when orientation is not
@@ -76,7 +78,34 @@ class EntityObs:
 def rotation_matrix_to_quaternion(R: np.ndarray) -> np.ndarray:
     """Convert a 3x3 rotation matrix to an (x, y, z, w) quaternion.
 
-    Uses scipy's convention to match the rest of this module.
+    Pure-numpy implementation of Shepperd's method; matches scipy's
+    ``Rotation.from_matrix(R).as_quat()`` xyzw convention so no SciPy
+    dependency is needed.
     """
-    from scipy.spatial.transform import Rotation
-    return Rotation.from_matrix(R).as_quat().astype(np.float32)
+    R = np.asarray(R, dtype=np.float64)
+    t = R[0, 0] + R[1, 1] + R[2, 2]
+    if t > 0.0:
+        s = np.sqrt(t + 1.0) * 2.0
+        w = 0.25 * s
+        x = (R[2, 1] - R[1, 2]) / s
+        y = (R[0, 2] - R[2, 0]) / s
+        z = (R[1, 0] - R[0, 1]) / s
+    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+        s = np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2.0
+        w = (R[2, 1] - R[1, 2]) / s
+        x = 0.25 * s
+        y = (R[0, 1] + R[1, 0]) / s
+        z = (R[0, 2] + R[2, 0]) / s
+    elif R[1, 1] > R[2, 2]:
+        s = np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2.0
+        w = (R[0, 2] - R[2, 0]) / s
+        x = (R[0, 1] + R[1, 0]) / s
+        y = 0.25 * s
+        z = (R[1, 2] + R[2, 1]) / s
+    else:
+        s = np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2.0
+        w = (R[1, 0] - R[0, 1]) / s
+        x = (R[0, 2] + R[2, 0]) / s
+        y = (R[1, 2] + R[2, 1]) / s
+        z = 0.25 * s
+    return np.array([x, y, z, w], dtype=np.float32)

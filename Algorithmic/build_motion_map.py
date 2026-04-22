@@ -35,8 +35,8 @@ MOTOR_NAMES = [
 # hand-supporting the arm during recording.  Tune these empirically.
 GRAVITY_OFFSETS = {
     "left": {
-        "shoulder_lift": -30,   # + is forward, - is toward home
-        "elbow_flex": -40,    # + is lower
+        "shoulder_lift": -20,   # + is forward, - is toward home
+        "elbow_flex": -30,    # + is lower
         "wrist_flex": 0,     # + is toward base
     },
     "right": {
@@ -51,12 +51,12 @@ GRAVITY_OFFSETS = {
 # Signs depend on each arm's base-frame orientation — tune independently.
 POSITION_OFFSET = {
     "left": {
-        "base_x": -0.02, # - right
-        "base_z": -0.02, # - toward camera
+        "base_x": -0.03, # - left
+        "base_z": 0.0, # - toward camera
     },
     "right": {
-        "base_x": -0.04,
-        "base_z": 0.0,
+        "base_x": 0.02,
+        "base_z": -0.02,
     },
 }
 

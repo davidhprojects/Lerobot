@@ -12,6 +12,7 @@ direct communication between arms.
 Usage: python run.py
 """
 
+import argparse
 import sys
 import time
 import json
@@ -52,6 +53,26 @@ ARM_MOTORS = [
     "wrist_flex", "wrist_roll",
 ]
 
+# Optional shared state tracker. External scripts (run_collect.py) can
+# set this to a {"left": phase_name, "right": phase_name} dict before
+# launching the arm threads; _set_phase() will keep it in sync with the
+# printed phase transitions. Leave as None when unused — the prints
+# still happen, there's just no side effect.
+STATE_TRACKER: dict[str, str] | None = None
+
+# If True, the HOVER loop prints each arm's XZ error to the tray
+# marker once per second. Enabled by main() when --error is passed.
+PRINT_XZ_ERROR: bool = False
+
+
+def _set_phase(side: str, phase: str, detail: str = ""):
+    """Print a phase transition and update ``STATE_TRACKER`` if it exists."""
+    msg = phase + (f" ({detail})" if detail else "")
+    print(f"  [{side}] -> {msg}")
+    if STATE_TRACKER is not None:
+        STATE_TRACKER[side] = phase
+
+
 RECORD_FPS = 30
 
 # ── Timing ──────────────────────────────────────────────────
@@ -64,21 +85,22 @@ RELEASE_DURATION_S   = 3.0   # seconds to move to release waypoint
 RETURN_HOME_DURATION = 4.0   # seconds to return home at end
 
 # ── Thresholds ──────────────────────────────────────────────
-CONVERGENCE_THRESHOLD_M = 0.018   # 18 mm XZ error to leave HOVER
-HOVER_FEEDBACK_GAIN     = 0.5     # fraction of XZ error fed back to motion map
+CONVERGENCE_THRESHOLD_M = 0.02    # XZ error to leave HOVER
+HOVER_FEEDBACK_GAIN     = 1.0     # fraction of XZ error fed back to motion map
 CONVERGENCE_READINGS    = 3       # consecutive sub-threshold readings
-NUDGE_FRACTION          = 0.4    # 40% of descent delta
+NUDGE_FRACTION          = 0.60    # 60% of descent delta
 TAG_RISE_THRESHOLD_M    = 0.003   # 3 mm rise on opposing tag
 LIFT_HEIGHT_M           = 0.060   # 60 mm total rise for lift
 LIFT_STEP_FRACTION      = 0.03    # each lift step = 3% of descent delta
 LIFT_STEP_INTERVAL_S    = 0.02    # seconds between lift steps
 TRANSLATE_DURATION_S    = 5.0    # total translation time
-TRANSLATE_STEP_INTERVAL = 0.05    # seconds between translate steps
+TRANSLATE_STEP_INTERVAL = 0.033    # seconds between translate steps
+TRANSLATE_TRANSITION_DURATION_S = 1.0  # smooth joint move from lift pose to translate-start pose
 # Per-arm height trim during translation, as fraction of descent delta.
 # Negative = raise arm (subtract descent direction).
-TRANSLATE_HEIGHT_TRIM   = {"left": -1.0, "right": -0.5}
+TRANSLATE_HEIGHT_TRIM   = {"left": -1.0, "right": -0.4}
 TILT_PAUSE_THRESHOLD_M  = 0.005   # 5 mm height diff pauses higher side
-GRASP_PROXIMITY_M       = 0.085   # 85 mm vertical distance to stop descent
+GRASP_PROXIMITY_M       = 0.086   # 86 mm vertical distance to stop descent
 LOWER_DURATION_S        = 4.0     # total time for lowering
 LOWER_STEP_INTERVAL_S   = 0.02    # seconds between lower steps
 
@@ -284,13 +306,14 @@ def run_arm(
     # ===========================================================
     #  HOVER - track tray marker via motion map, converge
     # ===========================================================
-    print(f"  [{side}] -> HOVER")
+    _set_phase(side, "HOVER")
 
     smooth_bx = None
     smooth_bz = None
     alpha = 0.2
     miss_streak = 0
     converged_count = 0
+    last_err_print = 0.0
 
     tray_marker_id = (detector.config.tray_left if side == "left"
                       else detector.config.tray_right)
@@ -352,6 +375,19 @@ def run_arm(
             error_bz = adjusted_bz - grip_base[2]  # positive = gripper needs +bz
             xz_dist = float(np.sqrt(error_bx ** 2 + error_bz ** 2))
 
+        # ---- periodic XZ error print (diagnostic, --error) ----
+        if PRINT_XZ_ERROR and (time.perf_counter() - last_err_print) >= 1.0:
+            if xz_dist is None:
+                print(f"  [{side}] xz_err=n/a (gripper marker not detected)")
+            else:
+                print(
+                    f"  [{side}] xz_err={xz_dist * 1000:6.1f}mm  "
+                    f"ebx={error_bx * 1000:+6.1f}  "
+                    f"ebz={error_bz * 1000:+6.1f}  "
+                    f"threshold={CONVERGENCE_THRESHOLD_M * 1000:.1f}mm"
+                )
+            last_err_print = time.perf_counter()
+
         # ---- evaluate polynomial with feedback correction ----
         # Shift the query point by the observed error so the motion map
         # output drives the gripper toward the actual target, not just
@@ -367,7 +403,7 @@ def run_arm(
         # ---- hover raised: subtract half a descent delta so the arms
         #      track from above and swoop down as they converge ----
         for m in ARM_MOTORS:
-            target_joints[m] -= descent_delta[m] * 0.5
+            target_joints[m] -= descent_delta[m] * 0.3
 
         # ---- raise-on-traverse ----
         if xz_dist is not None:
@@ -414,7 +450,7 @@ def run_arm(
     # ===========================================================
     #  APPROACH - open gripper, descend, close gripper
     # ===========================================================
-    print(f"  [{side}] -> APPROACH")
+    _set_phase(side, "APPROACH")
 
     write_joints_raw(robot, {"gripper": gripper_open})
     time.sleep(GRIPPER_OPEN_WAIT_S)
@@ -455,7 +491,7 @@ def run_arm(
     # ===========================================================
     #  LIFT_WAITING - nudge lift, then watch opposing tray tag
     # ===========================================================
-    print(f"  [{side}] -> LIFT_WAITING")
+    _set_phase(side, "LIFT_WAITING")
 
     current = read_joints_raw(robot)
     nudge_start = {m: current[m] for m in ARM_MOTORS}
@@ -498,7 +534,7 @@ def run_arm(
     # ===========================================================
     #  LIFTING - slow, tilt-aware raise
     # ===========================================================
-    print(f"  [{side}] -> LIFTING")
+    _set_phase(side, "LIFTING")
 
     my_tray_key = f"tray_{side}"
     other_tray_key = f"tray_{other_side}"
@@ -563,6 +599,74 @@ def run_arm(
         return
 
     # ===========================================================
+    #  TRANSLATE_PREP — 1 s smooth joint move from the lifted
+    #     pose (delta-accumulated) to the motion-map-based pose
+    #     TRANSLATE will start from. Prevents the position jump
+    #     that happens when control switches from delta stepping
+    #     to motion-map evaluation.
+    # ===========================================================
+    _set_phase(side, "TRANSLATE_PREP")
+
+    trim = TRANSLATE_HEIGHT_TRIM.get(side, 0.0)
+    height_trim = {m: descent_delta[m] * trim for m in ARM_MOTORS}
+
+    prep_bx = None
+    prep_bz = None
+
+    if side == "left":
+        bx_vals, bz_vals = [], []
+        for _ in range(30):
+            if stop_event.is_set():
+                return
+            frame = get_frame()
+            if frame is not None:
+                poses = detector.detect(frame)
+                tray_cam = detector.get_tray_marker_pose(poses, side)
+                if tray_cam is not None:
+                    tb = cam_to_base(tray_cam, T_base_cam)
+                    bx_vals.append(tb[0])
+                    bz_vals.append(tb[2])
+            if len(bx_vals) >= 5:
+                break
+            time.sleep(0.033)
+        if len(bx_vals) >= 3:
+            prep_bx = float(np.mean(bx_vals))
+            prep_bz = float(np.mean(bz_vals))
+    else:
+        bx_vals, bz_vals = [], []
+        for _ in range(30):
+            if stop_event.is_set():
+                return
+            frame = get_frame()
+            if frame is not None:
+                poses = detector.detect(frame)
+                tray_cam = detector.get_tray_marker_pose(poses, side)
+                if tray_cam is not None:
+                    tb = cam_to_base(tray_cam, T_base_cam)
+                    bx_vals.append(tb[0])
+                    bz_vals.append(tb[2])
+            if len(bx_vals) >= 5:
+                break
+            time.sleep(0.033)
+        if len(bx_vals) >= 3:
+            prep_bx = float(np.mean(bx_vals))
+            prep_bz = float(np.mean(bz_vals))
+
+    if prep_bx is not None and motion_map.in_bounds(prep_bx, prep_bz):
+        prep_target = motion_map.evaluate(prep_bx, prep_bz)
+        for m in ARM_MOTORS:
+            prep_target[m] += height_trim[m]
+        current = read_joints_raw(robot)
+        prep_start = {m: current[m] for m in ARM_MOTORS}
+        smooth_move_single(
+            robot, prep_start, prep_target,
+            TRANSLATE_TRANSITION_DURATION_S,
+        )
+
+    if stop_event.is_set():
+        return
+
+    # ===========================================================
     #  TRANSLATE — leader-follower at hover height
     #
     #  Left arm (leader): interpolates in (bx, bz) toward its
@@ -571,23 +675,29 @@ def run_arm(
     #     by tray width in base_x, evaluates its own motion map.
     #  Both arms run for TRANSLATE_DURATION_S on the same timer.
     # ===========================================================
-    print(f"  [{side}] -> TRANSLATE (Phase B: "
-          f"{'leader' if side == 'left' else 'follower'})")
+    _set_phase(side, "TRANSLATE",
+               detail="leader" if side == "left" else "follower")
 
-    # Measure tray offset from markers (full XZ vector between the two
-    # tray markers in this arm's base frame)
+    # Measure the offset from the LEFT GRIPPER marker to the RIGHT TRAY
+    # marker in this arm's base frame. The follower will observe the
+    # left gripper every tick and add this offset to derive where the
+    # right tray should go. The left gripper is used in place of the
+    # left tray because the gripper marker is much larger and
+    # essentially never lost — tray markers disappear frequently once
+    # the tray is lifted and moving.
     tray_offset_bx = None
     tray_offset_bz = None
     for _ in range(30):
         frame = get_frame()
         if frame is not None:
             poses = detector.detect(frame)
-            tray_poses = detector.get_tray_poses(poses)
-            if tray_poses is not None:
-                left_tray_base = cam_to_base(tray_poses["tray_left"], T_base_cam)
-                right_tray_base = cam_to_base(tray_poses["tray_right"], T_base_cam)
-                tray_offset_bx = right_tray_base[0] - left_tray_base[0]
-                tray_offset_bz = right_tray_base[2] - left_tray_base[2]
+            left_gripper_cam = detector.get_gripper_pose(poses, "left")
+            right_tray_cam   = detector.get_tray_marker_pose(poses, "right")
+            if left_gripper_cam is not None and right_tray_cam is not None:
+                left_gripper_base = cam_to_base(left_gripper_cam, T_base_cam)
+                right_tray_base   = cam_to_base(right_tray_cam,   T_base_cam)
+                tray_offset_bx = right_tray_base[0] - left_gripper_base[0]
+                tray_offset_bz = right_tray_base[2] - left_gripper_base[2]
                 break
         time.sleep(0.033)
 
@@ -653,11 +763,15 @@ def run_arm(
             frame = get_frame()
             if frame is not None:
                 poses = detector.detect(frame)
-                # Read the LEFT tray marker and transform to RIGHT arm's base frame
-                left_tray_cam = detector.get_tray_marker_pose(poses, "left")
-                if left_tray_cam is not None:
-                    left_in_my_base = cam_to_base(left_tray_cam, T_base_cam)
-                    # Offset by full tray vector to get where my marker should be
+                # Read the LEFT GRIPPER marker (much more reliably visible
+                # than the small tray tags) and transform to the RIGHT
+                # arm's base frame.
+                left_gripper_cam = detector.get_gripper_pose(poses, "left")
+                if left_gripper_cam is not None:
+                    left_in_my_base = cam_to_base(left_gripper_cam, T_base_cam)
+                    # Offset (measured once at TRANSLATE start) maps the
+                    # left gripper position into the right tray's target
+                    # position — what the right-arm motion map expects.
                     my_target_bx = left_in_my_base[0] + tray_offset_bx
                     my_target_bz = left_in_my_base[2] + tray_offset_bz
 
@@ -683,7 +797,7 @@ def run_arm(
     #  LOWER - descend from translated to lowered waypoint,
     #          pausing the lower side if tray tilts
     # ===========================================================
-    print(f"  [{side}] -> LOWER")
+    _set_phase(side, "LOWER")
 
     lower_dest = {m: waypoints["lowered"][side][m] for m in ARM_MOTORS}
     arm_start = {m: v for m, v in read_joints_raw(robot).items()
@@ -723,7 +837,7 @@ def run_arm(
     if stop_event.is_set():
         return
 
-    print(f"  [{side}] -> RELEASE")
+    _set_phase(side, "RELEASE")
 
     write_joints_raw(robot, {"gripper": gripper_open})
     time.sleep(GRIPPER_OPEN_WAIT_S)
@@ -737,14 +851,14 @@ def run_arm(
     if stop_event.is_set():
         return
 
-    print(f"  [{side}] -> HOME")
+    _set_phase(side, "HOME")
 
     current = read_joints_raw(robot)
     home_start = {m: current[m] for m in ARM_MOTORS}
     home_end = {m: waypoints["home"][side][m] for m in ARM_MOTORS}
     smooth_move_single(robot, home_start, home_end, RETURN_HOME_DURATION)
 
-    print(f"  [{side}] DONE")
+    _set_phase(side, "DONE")
 
 
 # ============================================================
@@ -752,6 +866,16 @@ def run_arm(
 # ============================================================
 
 def main():
+    global PRINT_XZ_ERROR
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
+    parser.add_argument(
+        "--error", action="store_true",
+        help="Print each arm's XZ error to the tray marker once per "
+             "second during HOVER (diagnostic for convergence issues).",
+    )
+    args = parser.parse_args()
+    PRINT_XZ_ERROR = args.error
+
     sides = ["left", "right"]
 
     ports = load_ports()

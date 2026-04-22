@@ -5,11 +5,15 @@ Joint angles are fed as zeros (motors not required), so the two arm-EE
 positions are constant.  The tray positions are real — move the tray and
 you'll see ``tray_left`` / ``tray_right`` positions and velocities update.
 
+All positions are reported in the chosen arm's base frame.
+
 Run from the project root:
 
-    python GNN/live_smoke_test.py
+    python GNN/live_smoke_test.py              # defaults to --side left
+    python GNN/live_smoke_test.py --side right
 """
 
+import argparse
 import sys
 import time
 from pathlib import Path
@@ -20,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from perception.camera import RealSenseCamera
 from perception.aruco import ArucoDetector, MarkerConfig
-from Algorithmic.calibrate import load_base_transforms
+from algorithmic.calibrate import load_base_transforms
 from GNN.scene_observer import SceneObserver
 from GNN.graph_builder import build_graph
 
@@ -28,8 +32,8 @@ from GNN.graph_builder import build_graph
 PRINT_INTERVAL_S = 1.0
 
 
-def _print_entities(tick: int, ents):
-    print(f"\ntick {tick}")
+def _print_entities(tick: int, ents, side: str):
+    print(f"\ntick {tick}  (frame: {side}_base)")
     for e in ents:
         p = e.position * 1000  # mm
         v = e.velocity * 1000  # mm/s
@@ -39,6 +43,10 @@ def _print_entities(tick: int, ents):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--side", choices=("left", "right"), default="left")
+    args = parser.parse_args()
+
     transforms = load_base_transforms()
     if "left" not in transforms or "right" not in transforms:
         print("ERROR: base_transforms.json missing a side. Re-run calibrate.py.")
@@ -53,11 +61,11 @@ def main():
         camera_matrix=camera.get_camera_matrix(),
         dist_coeffs=camera.get_dist_coeffs(),
     )
-    observer = SceneObserver(transforms, dt=1.0 / 30.0)
+    observer = SceneObserver(args.side, transforms, dt=1.0 / 30.0)
 
     zero_joints = np.zeros(5)  # no motors connected; arm-EE positions will be static
 
-    print("Streaming... Ctrl+C to stop.")
+    print(f"Streaming {args.side}-base frame... Ctrl+C to stop.")
     print("Move the tray to see tray_left / tray_right velocity change.\n")
 
     last_print = 0.0
@@ -77,7 +85,7 @@ def main():
                           end="", flush=True)
                 else:
                     g = build_graph(ents)
-                    _print_entities(tick, ents)
+                    _print_entities(tick, ents, args.side)
                     print(f"  graph.x.shape={tuple(g.x.shape)}  "
                           f"edge_attr.shape={tuple(g.edge_attr.shape)}")
                 last_print = now
