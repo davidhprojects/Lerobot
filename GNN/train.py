@@ -162,6 +162,9 @@ def _mirror_sample(sample: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     out["action_right"] = sample["action_left"]  * signs_full
     out["grip_left"]    = sample["grip_right"]
     out["grip_right"]   = sample["grip_left"]
+    if "phase_mask_left" in sample:
+        out["phase_mask_left"]  = sample["phase_mask_right"]
+        out["phase_mask_right"] = sample["phase_mask_left"]
     return out
 
 
@@ -194,6 +197,18 @@ class TrayLiftDataset(Dataset):
         self.action_right     = cat("action_right")
         self.grip_left        = cat("gripper_target_left")
         self.grip_right       = cat("gripper_target_right")
+        # Per-side phase masks. When filtering by phase the OR-relaxed
+        # filter keeps samples where only one arm is in the target
+        # phase; the loss uses these masks to train only that arm's
+        # decoder on those samples. When there's no phase filter every
+        # sample counts for both sides (mask = 1).
+        if episode_data and "phase_mask_left" in episode_data[0]:
+            self.phase_mask_left  = cat("phase_mask_left")
+            self.phase_mask_right = cat("phase_mask_right")
+        else:
+            n = self.x_left.shape[0]
+            self.phase_mask_left  = torch.ones(n)
+            self.phase_mask_right = torch.ones(n)
         self.mirror_prob      = mirror_prob
         self.pos_jitter_m     = pos_jitter_m
 
@@ -202,14 +217,16 @@ class TrayLiftDataset(Dataset):
 
     def __getitem__(self, i: int) -> dict[str, torch.Tensor]:
         sample = {
-            "x_left":          self.x_left[i],
-            "x_right":         self.x_right[i],
-            "edge_attr_left":  self.edge_attr_left[i],
-            "edge_attr_right": self.edge_attr_right[i],
-            "action_left":     self.action_left[i],
-            "action_right":    self.action_right[i],
-            "grip_left":       self.grip_left[i],
-            "grip_right":      self.grip_right[i],
+            "x_left":           self.x_left[i],
+            "x_right":          self.x_right[i],
+            "edge_attr_left":   self.edge_attr_left[i],
+            "edge_attr_right":  self.edge_attr_right[i],
+            "action_left":      self.action_left[i],
+            "action_right":     self.action_right[i],
+            "grip_left":        self.grip_left[i],
+            "grip_right":       self.grip_right[i],
+            "phase_mask_left":  self.phase_mask_left[i],
+            "phase_mask_right": self.phase_mask_right[i],
         }
         if self.mirror_prob > 0.0 and torch.rand(1).item() < self.mirror_prob:
             sample = _mirror_sample(sample)
@@ -276,11 +293,20 @@ def _load_episode(path: Path) -> dict:
 
 
 def _filter_by_phase(eps: list[dict], phase: str) -> list[dict]:
-    """Return copies of each episode restricted to frames where BOTH
-    arms are in the named phase.
+    """Return copies of each episode restricted to frames where AT LEAST
+    ONE arm is in the named phase.
 
-    Requires per-phase dataset labels (see build_dataset.py). Episodes
-    that predate phase tracking are dropped with a warning.
+    The per-side phase masks (``phase_mask_left`` / ``phase_mask_right``,
+    1.0 when that arm is in the phase, 0.0 otherwise) are added so the
+    loss can be computed side-by-side: each decoder only learns from
+    frames where its own arm is in the target phase, even if the other
+    arm happens to be in a different phase on the same tick.
+
+    Requiring BOTH arms in the same phase (the previous behavior)
+    typically gives only tens of frames for short phases like HOVER,
+    which is well below what a 400k-parameter model can fit. The OR
+    relaxation recovers roughly 2x more data at the cost of needing
+    masked per-side losses — see ``compute_losses``.
     """
     from GNN.build_dataset import PHASE_TO_IDX
     if phase not in PHASE_TO_IDX:
@@ -299,10 +325,9 @@ def _filter_by_phase(eps: list[dict], phase: str) -> list[dict]:
                 f"episodes recorded with phase tracking)"
             )
             continue
-        mask = (
-            (ep["phase_idx_left"]  == phase_idx)
-            & (ep["phase_idx_right"] == phase_idx)
-        )
+        left_match  = (ep["phase_idx_left"]  == phase_idx)
+        right_match = (ep["phase_idx_right"] == phase_idx)
+        mask = left_match | right_match
         n_kept = int(mask.sum().item())
         if n_kept == 0:
             continue
@@ -313,10 +338,15 @@ def _filter_by_phase(eps: list[dict], phase: str) -> list[dict]:
             for k, v in ep.items()
             if k != "metadata"
         }
+        kept["phase_mask_left"]  = left_match[mask].float()
+        kept["phase_mask_right"] = right_match[mask].float()
         kept["metadata"] = {
             **ep["metadata"],
             "phase_filter": phase,
-            "n_frames_used": n_kept,
+            "n_frames_used":     n_kept,
+            "n_left_in_phase":   int(left_match.sum().item()),
+            "n_right_in_phase":  int(right_match.sum().item()),
+            "n_both_in_phase":   int((left_match & right_match).sum().item()),
         }
         out.append(kept)
     return out
@@ -338,8 +368,22 @@ def _compute_normalization(
     frames where the model actually does need to learn to produce
     motion.
     """
-    act_L = torch.cat([d["action_left"]  for d in train_eps], dim=0)[:, :ARM_JOINTS]
-    act_R = torch.cat([d["action_right"] for d in train_eps], dim=0)[:, :ARM_JOINTS]
+    # When OR-relaxed phase filtering is used, each episode has
+    # per-side phase masks; the per-side normalization stats should
+    # only see frames where *that* arm is in the target phase.
+    def _masked(eps, action_key, mask_key):
+        rows = []
+        for d in eps:
+            a = d[action_key][:, :ARM_JOINTS]
+            if mask_key in d:
+                m = d[mask_key].bool()
+                a = a[m]
+            if a.shape[0] > 0:
+                rows.append(a)
+        return torch.cat(rows, dim=0) if rows else torch.zeros(1, ARM_JOINTS)
+
+    act_L = _masked(train_eps, "action_left",  "phase_mask_left")
+    act_R = _masked(train_eps, "action_right", "phase_mask_right")
     zeros = torch.zeros(ARM_JOINTS)
     return Normalization(
         mean_left  = act_L.mean(dim=0) if subtract_mean else zeros.clone(),
@@ -372,24 +416,37 @@ def compute_losses(
     act_L_norm = norm.apply_left(batch["action_left"][:, :ARM_JOINTS])
     act_R_norm = norm.apply_right(batch["action_right"][:, :ARM_JOINTS])
 
-    mse_L = torch.mean((out["left"]["velocity"]  - act_L_norm) ** 2)
-    mse_R = torch.mean((out["right"]["velocity"] - act_R_norm) ** 2)
+    # Per-side masks (1.0 if that arm is in the --phase-filtered phase,
+    # 0.0 otherwise). Unfiltered training always gets 1s for both.
+    m_L = batch["phase_mask_left"]
+    m_R = batch["phase_mask_right"]
+    eps = 1e-6
 
-    bce_L = bce(out["left"]["gripper_logit"],  batch["grip_left"])
-    bce_R = bce(out["right"]["gripper_logit"], batch["grip_right"])
+    per_sample_mse_L = ((out["left"]["velocity"]  - act_L_norm) ** 2).mean(dim=1)
+    per_sample_mse_R = ((out["right"]["velocity"] - act_R_norm) ** 2).mean(dim=1)
+    mse_L = (per_sample_mse_L * m_L).sum() / (m_L.sum() + eps)
+    mse_R = (per_sample_mse_R * m_R).sum() / (m_R.sum() + eps)
+
+    per_sample_bce_L = torch.nn.functional.binary_cross_entropy_with_logits(
+        out["left"]["gripper_logit"],  batch["grip_left"],  reduction="none"
+    )
+    per_sample_bce_R = torch.nn.functional.binary_cross_entropy_with_logits(
+        out["right"]["gripper_logit"], batch["grip_right"], reduction="none"
+    )
+    bce_L = (per_sample_bce_L * m_L).sum() / (m_L.sum() + eps)
+    bce_R = (per_sample_bce_R * m_R).sum() / (m_R.sum() + eps)
 
     arm_loss  = 0.5 * (mse_L + mse_R)
     grip_loss = 0.5 * (bce_L + bce_R)
     total     = arm_loss + grip_weight * grip_loss
 
-    # Gripper accuracy for diagnostics
+    # Masked gripper accuracy (only counts in-phase samples).
     with torch.no_grad():
         g_pred_L = (out["left"]["gripper_logit"]  > 0.0).float()
         g_pred_R = (out["right"]["gripper_logit"] > 0.0).float()
-        grip_acc = 0.5 * (
-            (g_pred_L == batch["grip_left"]).float().mean() +
-            (g_pred_R == batch["grip_right"]).float().mean()
-        )
+        acc_L = ((g_pred_L == batch["grip_left"]).float()  * m_L).sum() / (m_L.sum() + eps)
+        acc_R = ((g_pred_R == batch["grip_right"]).float() * m_R).sum() / (m_R.sum() + eps)
+        grip_acc = 0.5 * (acc_L + acc_R)
 
     return {
         "total":     total,
@@ -489,9 +546,9 @@ def main():
                              "both arms are in this phase (e.g. LIFTING). "
                              "Requires dataset built from episodes with "
                              "phase tracking.")
-    parser.add_argument("--hidden",      type=int, default=64)
-    parser.add_argument("--rounds",      type=int, default=3)
-    parser.add_argument("--patience",    type=int, default=40,
+    parser.add_argument("--hidden",      type=int, default=128)
+    parser.add_argument("--rounds",      type=int, default=4)
+    parser.add_argument("--patience",    type=int, default=20,
                         help="Early-stop patience (epochs without val improvement).")
     parser.add_argument("--seed",        type=int, default=0)
     parser.add_argument("--device",      default="cuda" if torch.cuda.is_available() else "cpu")
@@ -503,6 +560,12 @@ def main():
     device = torch.device(args.device)
     ckpt_dir = Path(args.ckpt_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    # Auto-derive the checkpoint filename from the phase filter so
+    # per-phase training runs don't clobber each other. No phase filter
+    # means "everything", so keep the original default.
+    ckpt_name = f"{args.phase.lower()}.pt" if args.phase else "best.pt"
+    ckpt_path = ckpt_dir / ckpt_name
 
     # ---- Data ----
     ep_paths = _load_episode_files(Path(args.dataset_dir))
@@ -607,7 +670,7 @@ def main():
                     "args": vars(args),
                     "val_metrics": val_metrics,
                 },
-                ckpt_dir / "best.pt",
+                ckpt_path,
             )
         else:
             since_improved += 1
@@ -634,7 +697,7 @@ def main():
 
     with open(ckpt_dir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
-    print(f"Saved: {ckpt_dir/'best.pt'} and {ckpt_dir/'history.json'}")
+    print(f"Saved: {ckpt_path} and {ckpt_dir/'history.json'}")
 
 
 if __name__ == "__main__":

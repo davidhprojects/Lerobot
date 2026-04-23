@@ -2,28 +2,13 @@
 GNN/run_hybrid.py — run the bimanual tray-lift sequence with a modular,
 swappable list of phase controllers.
 
-The default phase list is entirely deterministic and replicates
-run.py's behavior. Swap any entry for a learned (GNN) controller to
-hand that phase off to a trained model:
+Which phases are deterministic vs learned (GNN) is configured via the
+USE_GNN_* flags and CKPT_* paths at the top of this file — flip a
+flag to True, point its checkpoint at the right .pt, and run.
 
-    from GNN.phases import deterministic as det, learned as lrn
-    phases_left  = det.default_phases()
-    phases_right = det.default_phases()
-    phases_left[2]  = lrn.LearnedLift.load(
-        "GNN/checkpoints/lift.pt", cal_left, cal_right,
-    )
-    phases_right[2] = lrn.LearnedLift.load(
-        "GNN/checkpoints/lift.pt", cal_left, cal_right,
-    )
-
-See ``--swap LIFTING=GNN/checkpoints/lift.pt`` for the CLI version.
-
-Usage (all-deterministic, sanity-check baseline):
+Usage:
     python GNN/run_hybrid.py
-
-Usage (swap LIFTING for a GNN):
-    python GNN/run_hybrid.py --swap LIFTING=GNN/checkpoints/lift.pt \\
-                             --max-step-deg 4 --smooth-window 5
+    python GNN/run_hybrid.py --max-step-deg 4 --smooth-window 5
 """
 
 from __future__ import annotations
@@ -67,6 +52,56 @@ from GNN.scene_observer import SceneObserver
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CALIB_DIR = REPO_ROOT / "calibrations"
+
+
+# ==================================================================
+# PHASE CONFIGURATION — flip a flag to True to use the learned (GNN)
+# controller for that phase, False to keep the hand-coded
+# deterministic version.
+#
+# Only phases with a registered learned controller in
+# ``_LEARNED_FACTORIES`` (below) will actually be swapped. The rest
+# fall back to deterministic with a warning on startup.
+#
+# CKPT_* paths are only read when the matching USE_GNN_* is True.
+# ==================================================================
+
+USE_GNN_HOVER          = False
+USE_GNN_APPROACH       = False
+USE_GNN_LIFTING        = False
+USE_GNN_TRANSLATE      = True
+USE_GNN_LOWER          = False
+USE_GNN_RELEASE        = False
+
+# HOME is intentionally not configurable — the final return-to-home
+# motion is out of camera frame, so there is nothing a GNN could
+# observe, and it stays deterministic forever.
+#
+# TRANSLATE_PREP is also not configurable: its motion is effectively a
+# shorter prefix of TRANSLATE, so when USE_GNN_TRANSLATE is True we
+# fold prep frames into the translate model at training time (both
+# sources of data labeled "TRANSLATE"). The deterministic prep phase
+# still runs on the hardware to bridge the lift-accumulated pose into
+# a motion-map-compatible starting pose for the translate controller.
+
+CKPT_HOVER          = str(REPO_ROOT / "GNN" / "checkpoints" / "hover.pt")
+CKPT_APPROACH       = str(REPO_ROOT / "GNN" / "checkpoints" / "approach.pt")
+CKPT_LIFTING        = str(REPO_ROOT / "GNN" / "checkpoints" / "lifting.pt")
+CKPT_TRANSLATE      = str(REPO_ROOT / "GNN" / "checkpoints" / "translate.pt")
+CKPT_LOWER          = str(REPO_ROOT / "GNN" / "checkpoints" / "lower.pt")
+CKPT_RELEASE        = str(REPO_ROOT / "GNN" / "checkpoints" / "release.pt")
+
+# Internal mapping: phase-name -> (use_gnn_flag, ckpt_path). Keep in
+# sync with the constants above. Order doesn't matter here — the
+# default phase list defines execution order.
+_PHASE_CONFIG: dict[str, tuple[bool, str]] = {
+    "HOVER":     (USE_GNN_HOVER,     CKPT_HOVER),
+    "APPROACH":  (USE_GNN_APPROACH,  CKPT_APPROACH),
+    "LIFTING":   (USE_GNN_LIFTING,   CKPT_LIFTING),
+    "TRANSLATE": (USE_GNN_TRANSLATE, CKPT_TRANSLATE),
+    "LOWER":     (USE_GNN_LOWER,     CKPT_LOWER),
+    "RELEASE":   (USE_GNN_RELEASE,   CKPT_RELEASE),
+}
 
 
 # ------------------------------------------------------------------
@@ -131,47 +166,53 @@ def _load_calibration(side: str) -> dict:
 # ------------------------------------------------------------------
 
 # Maps phase name -> factory that returns a learned controller.
-# Extend as more learned phases are implemented.
 _LEARNED_FACTORIES = {
-    "LIFTING": lambda ckpt, cal_L, cal_R, max_step_deg, smooth_window:
-        lrn.LearnedLift.load(ckpt, cal_L, cal_R, max_step_deg, smooth_window),
+    "HOVER":          lambda ckpt, cal_L, cal_R, ms, sw:
+        lrn.LearnedHover.load(ckpt, cal_L, cal_R, ms, sw),
+    "APPROACH":       lambda ckpt, cal_L, cal_R, ms, sw:
+        lrn.LearnedApproach.load(ckpt, cal_L, cal_R, ms, sw),
+    "LIFTING":        lambda ckpt, cal_L, cal_R, ms, sw:
+        lrn.LearnedLift.load(ckpt, cal_L, cal_R, ms, sw),
+    "TRANSLATE":      lambda ckpt, cal_L, cal_R, ms, sw:
+        lrn.LearnedTranslate.load(ckpt, cal_L, cal_R, ms, sw),
+    "LOWER":          lambda ckpt, cal_L, cal_R, ms, sw:
+        lrn.LearnedLower.load(ckpt, cal_L, cal_R, ms, sw),
+    "RELEASE":        lambda ckpt, cal_L, cal_R, ms, sw:
+        lrn.LearnedRelease.load(ckpt, cal_L, cal_R, ms, sw),
 }
 
 
 def _build_phases(
     cal_left: dict,
     cal_right: dict,
-    swaps: list[tuple[str, str]],
     max_step_deg: float,
     smooth_window: int,
 ) -> list[PhaseController]:
-    """Build one arm's phase list, applying any --swap overrides.
+    """Build one arm's phase list, honoring the USE_GNN_* config flags
+    at the top of this file.
 
-    ``swaps`` is a list of (phase_name, ckpt_path). Each phase_name must
-    match one of the classes in deterministic.default_phases(); the
-    matching controller is replaced by its learned counterpart.
+    For each default (deterministic) phase, if its USE_GNN_* flag is
+    True AND a learned controller is registered in
+    ``_LEARNED_FACTORIES``, the deterministic entry is replaced. If the
+    flag is True but no learned controller exists yet (the common case
+    for phases we haven't implemented), we warn once and keep the
+    deterministic entry.
     """
     phases = det.default_phases()
-    if not swaps:
-        return phases
-
-    by_name = {p.name: i for i, p in enumerate(phases)}
-    for phase_name, ckpt in swaps:
-        if phase_name not in _LEARNED_FACTORIES:
-            raise SystemExit(
-                f"--swap {phase_name}=...: no learned controller registered "
-                f"for {phase_name}. Available: {sorted(_LEARNED_FACTORIES)}"
+    for i, p in enumerate(phases):
+        use_gnn, ckpt = _PHASE_CONFIG.get(p.name, (False, ""))
+        if not use_gnn:
+            continue
+        factory = _LEARNED_FACTORIES.get(p.name)
+        if factory is None:
+            print(
+                f"  Warning: USE_GNN_{p.name} is True but no learned "
+                f"controller is registered for this phase. Keeping "
+                f"deterministic."
             )
-        if phase_name not in by_name:
-            raise SystemExit(
-                f"--swap {phase_name}=...: no deterministic phase with that "
-                f"name in the default list. Names: {sorted(by_name)}"
-            )
-        factory = _LEARNED_FACTORIES[phase_name]
-        phases[by_name[phase_name]] = factory(
-            ckpt, cal_left, cal_right, max_step_deg, smooth_window,
-        )
-        print(f"  Swapped {phase_name}: learned controller from {ckpt}")
+            continue
+        phases[i] = factory(ckpt, cal_left, cal_right, max_step_deg, smooth_window)
+        print(f"  Swapped {p.name}: learned controller from {ckpt}")
     return phases
 
 
@@ -193,23 +234,8 @@ def _run_arm(ctx: PhaseContext, phases: list[PhaseController]):
 # Main
 # ------------------------------------------------------------------
 
-def _parse_swap(s: str) -> tuple[str, str]:
-    if "=" not in s:
-        raise argparse.ArgumentTypeError(
-            f"--swap expects PHASE=path/to/ckpt.pt, got: {s!r}"
-        )
-    name, path = s.split("=", 1)
-    return name.strip(), path.strip()
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
-    parser.add_argument(
-        "--swap", action="append", type=_parse_swap, default=[],
-        metavar="PHASE=ckpt.pt",
-        help="Replace a deterministic phase with a learned controller. "
-             "May be passed multiple times.",
-    )
     parser.add_argument("--max-step-deg", type=float, default=4.0,
                         help="Per-tick joint step cap for learned phases.")
     parser.add_argument("--smooth-window", type=int, default=5,
@@ -277,7 +303,7 @@ def main():
     # --- build per-arm phase lists ---
     phases_by_side = {
         s: _build_phases(
-            cal_left, cal_right, args.swap,
+            cal_left, cal_right,
             args.max_step_deg, args.smooth_window,
         )
         for s in sides

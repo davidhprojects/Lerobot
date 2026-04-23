@@ -117,6 +117,11 @@ def _load_states_csv(path: Path) -> tuple[list[str], list[str]]:
     episodes recorded before phase tracking was added) returns two
     empty lists — downstream code treats that as "phase unknown" and
     disables the gripper-based tray fallback.
+
+    Phase names in the file are canonicalized through ``_PHASE_ALIASES``
+    (see below) so legacy TRANSLATE_PREP frames are returned as
+    TRANSLATE here — they're the same phase as far as the GNN is
+    concerned.
     """
     if not path.exists():
         return [], []
@@ -127,8 +132,8 @@ def _load_states_csv(path: Path) -> tuple[list[str], list[str]]:
         l_idx = header.index("left_state")
         r_idx = header.index("right_state")
         for row in reader:
-            left_states.append(row[l_idx])
-            right_states.append(row[r_idx])
+            left_states.append(_PHASE_ALIASES.get(row[l_idx], row[l_idx]))
+            right_states.append(_PHASE_ALIASES.get(row[r_idx], row[r_idx]))
     return left_states, right_states
 
 
@@ -137,7 +142,7 @@ def _load_states_csv(path: Path) -> tuple[list[str], list[str]]:
 # gripper marker (which is larger and essentially never lost).
 _GRIPPER_CLOSED_PHASES = {
     "LIFT_WAITING", "LIFTING",
-    "TRANSLATE_PREP", "TRANSLATE",
+    "TRANSLATE",
     "LOWER",
 }
 
@@ -147,14 +152,23 @@ PHASE_NAMES = [
     "INIT", "HOME", "PRE_GRASP",
     "HOVER", "APPROACH",
     "LIFT_WAITING", "LIFTING",
-    "TRANSLATE_PREP", "TRANSLATE",
+    "TRANSLATE",
     "LOWER", "RELEASE", "DONE",
 ]
 PHASE_TO_IDX = {name: i for i, name in enumerate(PHASE_NAMES)}
 PHASE_UNKNOWN = -1
 
+# Legacy / bundled phase-name aliases. When a states.csv row contains a
+# name in this dict, it is treated as the mapped canonical phase.
+# TRANSLATE_PREP is folded into TRANSLATE because the two motions are
+# functionally identical and the GNN handles them as one phase.
+_PHASE_ALIASES: dict[str, str] = {
+    "TRANSLATE_PREP": "TRANSLATE",
+}
+
 
 def _phase_idx(name: str) -> int:
+    name = _PHASE_ALIASES.get(name, name)
     return PHASE_TO_IDX.get(name, PHASE_UNKNOWN)
 
 
