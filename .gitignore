@@ -10,6 +10,7 @@ Control/recorded_motion.json
 *.jsonl
 *.pt
 !pipeline_block_diagram.png
+!pipeline_block_diagram_light.png
 !scene_graph_overlay_pose_20260423_132241.png
 
 # Machine-specific port config
