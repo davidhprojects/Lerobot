@@ -12,6 +12,8 @@ Control/recorded_motion.json
 !pipeline_block_diagram.png
 !pipeline_block_diagram_light.png
 !scene_graph_overlay_pose_20260423_132241.png
+!results_translate_training_curve.png
+!results_val_mse_by_phase.png
 
 # Machine-specific port config
 ports.json
