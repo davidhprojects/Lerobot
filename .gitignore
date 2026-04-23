@@ -3,13 +3,14 @@ Control/recorded_motion_follower.json
 Control/recorded_motion.json
 
 # Image Data
-!pipeline_block_diagram.png
 *.png
 *.csv
 *.json
 *.pdf
 *.jsonl
 *.pt
+!pipeline_block_diagram.png
+!scene_graph_overlay_pose_20260423_132241.png
 
 # Machine-specific port config
 ports.json
